@@ -5,7 +5,7 @@ import subprocess
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = whisper.load_model("base").to(device)
+model = whisper.load_model("small").to(device)
 
 
 def convert_video_to_audio(video_path):
@@ -30,19 +30,27 @@ def convert_video_to_audio(video_path):
 
 
 def transcribe_video(video_path):
+    audio_path = None
+
     try:
         audio_path = convert_video_to_audio(video_path)
 
         result = model.transcribe(
             audio_path,
-            fp16=torch.cuda.is_available(),
-            language="en"
+            fp16=torch.cuda.is_available()
         )
 
-        if os.path.exists(audio_path):
+        return {
+            "text": result.get("text", ""),
+            "language": result.get("language", "unknown"),
+            "segments": result.get("segments", []),
+            "duration": (
+                result["segments"][-1]["end"]
+                if result.get("segments")
+                else 0
+            )
+        }
+
+    finally:
+        if audio_path and os.path.exists(audio_path):
             os.remove(audio_path)
-
-        return result.get("text", "")
-
-    except Exception as e:
-        raise e

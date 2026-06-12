@@ -14,7 +14,7 @@ os.makedirs("summaries", exist_ok=True)
 init_db()
 
 st.set_page_config(
-    page_title="MeetGenie",
+    page_title="MeetGenie v2",
     page_icon="👥",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -426,7 +426,7 @@ def nav_bar(current_page):
     label = page_labels.get(current_page, "")
     st.markdown(f"""
     <div class="nav-bar">
-        <div class="nav-logo">Meet<span>Genie</span></div>
+        <div class="nav-logo">Meet<span>Genie</span> v2</div>
         <div class="nav-tag">{label}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -448,11 +448,11 @@ def section_card(title, items, icon=""):
 
 def stat_badges(result):
     counts = [
-        (len(result.get("discussion_points", [])), "Discussion Points"),
-        (len(result.get("action_items", [])), "Action Items"),
+        (len(result.get("discussion_points", [])), "Discussion"),
+        (len(result.get("action_items", [])), "Actions"),
         (len(result.get("decisions", [])), "Decisions"),
-        (len(result.get("task_assignments", [])), "Task Assignments"),
-        (len(result.get("next_steps", [])), "Next Steps"),
+        (len(result.get("questions", [])), "Questions"),
+        (len(result.get("risks", [])), "Risks"),
     ]
     badges = "".join(
         f'<div class="stat-badge"><span class="stat-num">{n}</span><span class="stat-label">{label}</span></div>'
@@ -535,8 +535,6 @@ def upload_page():
         st.error(f"⚠ {st.session_state.error}")
         st.session_state.error = None
 
-
-#  PAGE 2 — RESULTS
 def results_page():
     nav_bar("results")
 
@@ -547,8 +545,7 @@ def results_page():
             st.session_state.page = "upload"
             st.rerun()
         return
-
-    # Header row
+    
     title_col, btn_col = st.columns([4, 1])
     with title_col:
         name = st.session_state.filename or "Meeting Summary"
@@ -560,10 +557,45 @@ def results_page():
             st.session_state.result = None
             st.rerun()
 
-    # Stats row
     stat_badges(result)
+    language = result.get("language", "unknown")
+    duration = result.get("duration", 0)
 
-    # Overview
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.info(f"🌐 Language: {language}")
+
+    with col2:
+        st.info(f"Duration: {round(duration / 60, 1)} min")
+
+    with st.expander("Transcript"):
+
+        segments = result.get("segments", [])
+
+        if segments:
+
+            for seg in segments:
+
+                start = int(seg["start"])
+                end = int(seg["end"])
+
+                start_ts = f"{start//60:02d}:{start%60:02d}"
+                end_ts = f"{end//60:02d}:{end%60:02d}"
+
+                st.markdown(
+                    f"**[{start_ts} - {end_ts}]**  "
+                    f"{seg['text']}"
+                )
+
+        else:
+
+            st.text_area(
+                "Transcript",
+                result.get("transcript", ""),
+                height=300
+            )
+
     overview = result.get("overview", "").strip()
     st.markdown(f"""
     <div class="overview-card">
@@ -572,7 +604,6 @@ def results_page():
     </div>
     """, unsafe_allow_html=True)
 
-    # Detail grid
     c1, c2, c3 = st.columns(3)
     with c1:
         section_card("Key Discussion Points", result.get("discussion_points", []), "🔑")
@@ -581,11 +612,12 @@ def results_page():
         section_card("Action Items", result.get("action_items", []), "✅")
         section_card("Task Assignments", result.get("task_assignments", []), "👥")
     with c3:
-        section_card("Next Steps", result.get("next_steps", []), "➡️")
+        section_card("Risks", result.get("risks", []), "⚠️")
+        section_card("Questions", result.get("questions", []), "❓")
+        section_card("Follow Ups", result.get("follow_ups", []), "🔄")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Save button
         if st.button("Save to History", use_container_width=True, key="save_history_btn"):
             if overview:
                 save_meeting(st.session_state.filename, result)
@@ -593,14 +625,13 @@ def results_page():
             else:
                 st.error("Cannot save a summary with no overview.")
 
-        # PDF download
         pdf_bytes = generate_summary_pdf(
             result,
             st.session_state.filename or "Meeting Summary"
         )
 
         st.download_button(
-            "⬇ Download PDF",
+            "Download PDF",
             data=bytes(pdf_bytes),
             file_name=f"{(st.session_state.filename or 'meeting').replace(' ', '_')}_summary.pdf",
             mime="application/pdf",
@@ -608,7 +639,6 @@ def results_page():
             use_container_width=True
         )
 
-    # ✅ SINGLE Email section (fixed)
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -617,7 +647,7 @@ def results_page():
         email = st.text_input(
             "Send summary via email",
             placeholder="recipient@example.com",
-            key="results_email"   # 🔥 FIX
+            key="results_email"
         )
     with btn_col:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -631,7 +661,6 @@ def results_page():
                 except Exception as e:
                     st.error(f"Failed to send email: {e}")
 
-# PAGE 3 — HISTORY
 def history_page():
     nav_bar("history")
 
@@ -644,7 +673,6 @@ def history_page():
             st.session_state.page = "upload"
             st.rerun()
 
-    # ✅ FIX 1 + 2: label + key added
     search_query = st.text_input(
         "Search meetings",
         placeholder="🔍  Search meetings by name, keyword, or content…",
@@ -656,7 +684,6 @@ def history_page():
 
     meetings = search_meetings(search_query) if search_query.strip() else get_all_meetings()
 
-    # ✅ TOTAL MEETINGS BOX
     total_meetings = len(get_all_meetings())
     st.markdown(f"""
     <div style="
@@ -705,7 +732,6 @@ def history_page():
         with detail_col:
             with st.expander("View full summary"):
 
-                # ✅ FIX 3: safe parsing (prevents crash)
                 try:
                     parsed = json.loads(summary_json)
                 except:
@@ -727,7 +753,7 @@ def history_page():
 
                 st.download_button(
                     "⬇ Download PDF",
-                    data=bytes(pdf_bytes),  # ✅ already correct
+                    data=bytes(pdf_bytes),
                     file_name=f"{(filename or 'meeting').replace(' ', '_')}_summary.pdf",
                     mime="application/pdf",
                     key=f"pdf_{meeting_id}"
@@ -740,8 +766,6 @@ def history_page():
 
         st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
 
-
-#  MAIN APP ROUTING
 if __name__ == "__main__":
     page = st.session_state.get("page", "upload")
     

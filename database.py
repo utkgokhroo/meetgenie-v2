@@ -12,23 +12,55 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filename TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
             overview TEXT,
+
+            language TEXT,
+            duration REAL,
+
+            transcript TEXT,
+            transcript_json TEXT,
+
             summary_json TEXT
         )
-    """)
+        """)
     conn.commit()
     conn.close()
 
 
 def save_meeting(filename, result):
+
     conn = sqlite3.connect(DB_NAME)
+
     conn.execute(
-        "INSERT INTO meetings (filename, overview, summary_json, created_at) VALUES (?, ?, ?, ?)",
-        (filename, result.get("overview", ""), json.dumps(result), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        """
+        INSERT INTO meetings
+        (
+            filename,
+            overview,
+            language,
+            duration,
+            transcript,
+            transcript_json,
+            summary_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            filename,
+            result.get("overview", ""),
+            result.get("language", ""),
+            result.get("duration", 0),
+            result.get("transcript", ""),
+            json.dumps(result.get("segments", [])),
+            json.dumps(result),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
     )
+
     conn.commit()
     conn.close()
-
 
 def delete_meeting(meeting_id):
     conn = sqlite3.connect(DB_NAME)

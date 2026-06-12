@@ -16,17 +16,19 @@ EMPTY_SUMMARY = {
     "action_items": [],
     "decisions": [],
     "task_assignments": [],
-    "next_steps": []
+    "next_steps": [],
+    "risks": [],
+    "questions": [],
+    "follow_ups": []
 }
 
-# 🔹 Simple in-memory cache
 cache = {}
 
 def get_cache_key(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 
-def split_transcript(text, max_words=2500):  # ⬅️ slightly bigger chunks
+def split_transcript(text, max_words=2500):
     words = text.split()
     if not words:
         return []
@@ -40,9 +42,7 @@ def safe_json_parse(text):
     except json.JSONDecodeError:
         return None
 
-
-# 🔹 NEW: retry wrapper
-def generate_with_retry(prompt, retries=2):  # ⬅️ reduce retries
+def generate_with_retry(prompt, retries=2):
     for attempt in range(retries):
         try:
             print(f"🚀 API call attempt {attempt+1}")
@@ -60,7 +60,7 @@ def generate_with_retry(prompt, retries=2):  # ⬅️ reduce retries
                 return None
 
             if "503" in error_str:
-                wait_time = 10   # ⬅️ was 40+, now fast
+                wait_time = 10
                 print(f"⏳ Server busy. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
             else:
@@ -73,29 +73,36 @@ def summarize_chunk(chunks):
         [f"PART {i+1}:\n{chunk}" for i, chunk in enumerate(chunks)]
     )
 
-    prompt = f"""You are a strict JSON generator.
+    prompt = f"""
+    You are a meeting intelligence engine.
 
-Return ONLY valid JSON. No explanation.
+    Return ONLY valid JSON.
 
-Format:
-{{
-  "overview": "",
-  "discussion_points": [],
-  "action_items": [],
-  "decisions": [],
-  "task_assignments": [],
-  "next_steps": []
-}}
+    {{
+    "overview":"",
+    "discussion_points":[],
+    "action_items":[],
+    "decisions":[],
+    "task_assignments":[],
+    "next_steps":[],
+    "risks":[],
+    "questions":[],
+    "follow_ups":[]
+    }}
 
-Rules:
-- Merge all parts into ONE coherent summary
-- Remove duplicates
-- Be concise
-- Extract clear actions and decisions
+    Rules:
+    - Extract key discussion points
+    - Extract decisions
+    - Extract action items
+    - Extract risks and blockers
+    - Extract unanswered questions
+    - Extract follow ups
+    - Preserve names if mentioned
+    - Return empty arrays if none exist
 
-Transcript:
-{combined_text}
-"""
+    Transcript:
+    {combined_text}
+    """
 
     response = generate_with_retry(prompt)
 
@@ -112,7 +119,16 @@ def merge_summaries(summaries):
     merged["overview"] = ""
     for s in summaries:
         merged["overview"] += s.get("overview", "") + " "
-        for key in ["discussion_points", "action_items", "decisions", "task_assignments", "next_steps"]:
+        for key in [
+        "discussion_points",
+        "action_items",
+        "decisions",
+        "task_assignments",
+        "next_steps",
+        "risks",
+        "questions",
+        "follow_ups"
+        ]:
             merged[key].extend(s.get(key, []))
     return merged
 
@@ -129,7 +145,6 @@ def generate_summary(transcript):
         }
 
     try:
-        # 🔹 CACHE CHECK
         key = get_cache_key(transcript)
         if key in cache:
             print("⚡ Using cached result")
