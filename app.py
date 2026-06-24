@@ -595,20 +595,30 @@ def results_page():
 
                 speaker = seg.get("speaker", "Unknown")
 
+            # DEBUG: remove later
+                #st.write(seg)
+
                 st.markdown(
                     f"**{speaker}** "
                     f"**[{start_ts} - {end_ts}]**"
-                )
+            )
 
                 st.write(seg["text"])
-                
+
+                sentiment = seg.get("sentiment", "UNKNOWN")
+                score = seg.get("sentiment_score", 0)
+
+                st.caption(
+                    f" Sentiment: {sentiment} ({score:.2f})"
+            )
+
         else:
 
             st.text_area(
                 "Transcript",
                 result.get("transcript", ""),
                 height=300
-            )
+        )
 
     # =========================
 # Speaker Analytics
