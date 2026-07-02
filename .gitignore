@@ -1,31 +1,73 @@
+# ── Virtual environments ────────────────────────────────────────────────────
+.venv*/
 venv/
+env/
+.env/
+
+# ── Environment variables ────────────────────────────────────────────────────
 .env
+
+# ── Python cache ─────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-transcripts/
-summaries/
-sample.mp4
-test.txt
-.DS_Store
-Thumbs.db
-.vscode/
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
 .streamlit/secrets.toml
-ffmpeg/
-meetings.db
-temp.mp3
-.venv311/
-diarization_env/
-__pycache__/
-uploads/
-transcripts/
-summaries/
+
+# ── Database ──────────────────────────────────────────────────────────────────
 *.db
 *.sqlite
-.env
-sample.mp3
-sample.wav
-sample.mp4
-temp.mp4
-test.py
+*.sqlite3
+
+# ── Audio / video temp files ──────────────────────────────────────────────────
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.ogg
+*.flac
+*.webm
+temp_*.wav
+temp_*.mp3
+mic.wav
+speaker.wav
+meeting.wav
+meetgenie_*.wav
+
+# ── Upload and output folders ─────────────────────────────────────────────────
+uploads/
+summaries/
+transcripts/
+
+# ── AI model caches ───────────────────────────────────────────────────────────
+diarization_env/
+.cache/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+streamlit_log.txt
+
+# ── OS junk ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ── Build / dist ──────────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+client_secret.json
+token.json
+ffmpeg/

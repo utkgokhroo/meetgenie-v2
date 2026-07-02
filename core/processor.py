@@ -1,6 +1,6 @@
-from transcriber import transcribe_video
-from summarizer import generate_summary
-from speaker_intelligence import (
+from core.transcriber import transcribe_video
+from core.summarizer import generate_summary
+from core.speaker_intelligence import (
     calculate_talk_time,
     calculate_participation,
     get_top_speaker
@@ -27,8 +27,12 @@ def process_video(video_path):
     summary = generate_summary(
         transcription["text"]
     )
+    speaker_timeline = transcription.get(
+        "speaker_turns"
+    ) or transcription["segments"]
+
     talk_time = calculate_talk_time(
-        transcription["segments"]
+        speaker_timeline
     )
 
     participation = calculate_participation(
@@ -48,5 +52,17 @@ def process_video(video_path):
     summary["language"] = transcription["language"]
     summary["duration"] = transcription["duration"]
     summary["segments"] = transcription["segments"]
+    summary["speaker_turns"] = transcription.get(
+        "speaker_turns",
+        []
+    )
+    summary["speaker_sentiment"] = transcription.get(
+        "speaker_sentiment",
+        {}
+    )
+    summary["overall_sentiment"] = transcription.get(
+        "overall_sentiment",
+        "NEUTRAL"
+    )
 
     return summary
