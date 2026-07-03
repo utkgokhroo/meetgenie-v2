@@ -3,6 +3,8 @@ import json
 import os
 import tempfile
 import time
+from services.google_auth import google_login
+from services.database import save_user
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 import plotly.express as px
@@ -543,7 +545,7 @@ hr { border-color: var(--border) !important; }
 #  SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
 for key, default in [
-    ("page", "upload"),
+    ("page", "login"),
     ("result", None),
     ("error", None),
     ("filename", None),
@@ -578,7 +580,21 @@ def _process_recorded_audio(meeting_file):
 # ─────────────────────────────────────────────────────────────────────────────
 def render_sidebar():
     with st.sidebar:
-        st.markdown('<div style="padding:4px 0 20px;"><span style="font-size:18px;font-weight:700;color:#fff;letter-spacing:-0.3px;">Meet<span style="color:#4f7cff;">Genie</span></span></div>', unsafe_allow_html=True)
+
+        st.markdown(
+            '<div style="padding:4px 0 20px;"><span style="font-size:18px;font-weight:700;color:#fff;letter-spacing:-0.3px;">Meet<span style="color:#4f7cff;">Genie</span></span></div>',
+            unsafe_allow_html=True,
+        )
+
+        # --------------------------------------------------
+        # Logged in user
+        # --------------------------------------------------
+        user = st.session_state.get("user")
+
+        if user:
+            with st.container(border=True):
+                st.markdown(f"### 👤 {user['name']}")
+                st.caption(user["email"])
 
         page = st.session_state.get("page", "upload")
 
@@ -586,48 +602,109 @@ def render_sidebar():
             ("🎙️", "New Meeting", "upload"),
             ("📋", "History", "history"),
         ]
+
         for icon, label, target in nav_items:
             active = "active" if page == target else ""
-            st.markdown(f'<div class="sb-nav-item {active}">{icon}&nbsp;&nbsp;{label}</div>', unsafe_allow_html=True)
-            if st.button(label, key=f"sb_{target}", width='stretch', help=f"Go to {label}"):
-                st.session_state.page = target
+
+            st.markdown(
+                f'<div class="sb-nav-item {active}">{icon}&nbsp;&nbsp;{label}</div>',
+                unsafe_allow_html=True,
+            )
+
+            if st.button(
+                label,
+                key=f"sb_{target}",
+                width="stretch",
+                help=f"Go to {label}",
+            ):
+                st.session_state["page"] = target
+
                 if target != "results":
-                    st.session_state.result = None
+                    st.session_state["result"] = None
+
                 st.rerun()
 
         if st.session_state.result:
             active = "active" if page == "results" else ""
-            st.markdown(f'<div class="sb-nav-item {active}">✨&nbsp;&nbsp;Last Summary</div>', unsafe_allow_html=True)
-            if st.button("Last Summary", key="sb_results", width='stretch'):
-                st.session_state.page = "results"
+
+            st.markdown(
+                f'<div class="sb-nav-item {active}">✨&nbsp;&nbsp;Last Summary</div>',
+                unsafe_allow_html=True,
+            )
+
+            if st.button(
+                "Last Summary",
+                key="sb_results",
+                width="stretch",
+            ):
+                st.session_state["page"] = "results"
                 st.rerun()
 
-        st.markdown('<div class="sb-section-label">Quick Stats</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="sb-section-label">Quick Stats</div>',
+            unsafe_allow_html=True,
+        )
+
         all_meetings = get_all_meetings()
-        st.markdown(f"""
-        <div class="sb-stat-block">
-            <div class="sb-stat-num">{len(all_meetings)}</div>
-            <div class="sb-stat-label">Meetings saved</div>
-        </div>
-        """, unsafe_allow_html=True)
+
+        st.markdown(
+            f"""
+            <div class="sb-stat-block">
+                <div class="sb-stat-num">{len(all_meetings)}</div>
+                <div class="sb-stat-label">Meetings saved</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         if is_recording():
             elapsed = get_recording_duration()
             mins, secs = divmod(int(elapsed), 60)
-            st.markdown(f"""
-            <div class="sb-stat-block" style="border-color:var(--red-border);background:var(--red-dim);">
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <div class="rec-dot"></div>
-                    <div class="sb-stat-num" style="color:var(--red);">{mins:02d}:{secs:02d}</div>
+
+            st.markdown(
+                f"""
+                <div class="sb-stat-block"
+                     style="border-color:var(--red-border);background:var(--red-dim);">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div class="rec-dot"></div>
+                        <div class="sb-stat-num"
+                             style="color:var(--red);">
+                            {mins:02d}:{secs:02d}
+                        </div>
+                    </div>
+
+                    <div class="sb-stat-label"
+                         style="color:#ffaaaa;">
+                        Recording active
+                    </div>
                 </div>
-                <div class="sb-stat-label" style="color:#ffaaaa;">Recording active</div>
-            </div>
-            """, unsafe_allow_html=True)
+                """,
+                unsafe_allow_html=True,
+            )
 
-        st.markdown('<div class="gap-lg"></div>', unsafe_allow_html=True)
-        st.markdown('<div style="font-size:10px;color:var(--text-ghost);font-family:DM Mono,monospace;padding:0 12px;">MeetGenie · Whisper + Gemini</div>', unsafe_allow_html=True)
+        # --------------------------------------------------
+        # Sign out
+        # --------------------------------------------------
+        st.markdown("<br>", unsafe_allow_html=True)
 
+        if user:
+            if st.button(
+                "🚪 Sign Out",
+                key="logout_btn",
+                width="stretch",
+            ):
+                st.session_state.clear()
+                st.rerun()
 
+        st.markdown(
+            '<div class="gap-lg"></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            '<div style="font-size:10px;color:var(--text-ghost);font-family:DM Mono,monospace;padding:0 12px;">MeetGenie · Whisper + Gemini</div>',
+            unsafe_allow_html=True,
+        )
 # ─────────────────────────────────────────────────────────────────────────────
 #  HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -686,8 +763,84 @@ def sentiment_pill(label):
     cls = {"POSITIVE": "POS", "NEGATIVE": "NEG"}.get(label, "NEU")
     icon = {"POSITIVE": "↑", "NEGATIVE": "↓"}.get(label, "·")
     return f'<span class="sentiment-pill {cls}">{icon} {label}</span>'
+    
+# ─────────────────────────────────────────────────────────────────────────────
+#  PAGE 0 — LOGIN
+# ─────────────────────────────────────────────────────────────────────────────
 
+def login_page():
 
+    st.markdown(
+        """
+<style>
+
+.login-container{
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    text-align:center;
+    margin-top:100px;
+    margin-bottom:40px;
+}
+
+.login-title{
+    font-size:56px;
+    font-weight:700;
+    color:white;
+    margin-bottom:20px;
+}
+
+.login-subtitle{
+    color:#9ca3af;
+    font-size:22px;
+    line-height:1.7;
+    max-width:750px;
+}
+
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="login-container">
+
+<div class="login-title">
+Meet<span style="color:#4F7FFF;">Genie</span>
+</div>
+
+<div class="login-subtitle">
+AI-powered meeting summaries, action items and automatic
+Google Calendar integration.<br>
+Sign in to continue.
+</div>
+
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Center Google Sign-In button
+    left, center, right = st.columns([3, 2, 3])
+
+    with center:
+        user = google_login()
+
+    if user:
+
+        save_user(
+            email=user["email"],
+            name=user["name"],
+            credentials=user["credentials"],
+        )
+
+        st.session_state["logged_in"] = True
+        st.session_state["user"] = user
+        st.session_state["page"] = "upload"
+
+        st.rerun()
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE 1 — UPLOAD
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1237,6 +1390,19 @@ def history_page():
 # ─────────────────────────────────────────────────────────────────────────────
 #  ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
-render_sidebar()
-pages = {"upload": upload_page, "results": results_page, "history": history_page}
-pages.get(st.session_state.get("page", "upload"), upload_page)()
+pages = {
+    "login": login_page,
+    "upload": upload_page,
+    "results": results_page,
+    "history": history_page,
+}
+
+# Show sidebar only after the user has signed in
+if st.session_state.get("logged_in", False):
+    render_sidebar()
+
+# Render the current page
+pages.get(
+    st.session_state.get("page", "login"),
+    login_page,
+)()

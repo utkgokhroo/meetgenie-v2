@@ -70,5 +70,8 @@ build/
 
 client_secret.json
 token.json
+client_secret_web.json
 ffmpeg/
 *.egg-info/
+
+

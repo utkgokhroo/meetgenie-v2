@@ -1,13 +1,3 @@
-from calendar_extractor import extract_calendar_events
+from services.google_auth import get_authorization_url
 
-transcript = """
-Let's schedule a Demo on July 15.
-
-Client meeting Friday at 2 PM.
-
-We should maybe meet someday.
-"""
-
-events = extract_calendar_events(transcript)
-
-print(events)
+print(get_authorization_url())
