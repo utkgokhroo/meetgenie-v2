@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime
 from services.google_auth import google_login
 from services.database import save_user
 from concurrent.futures import ThreadPoolExecutor
@@ -16,8 +17,8 @@ from services.email_sender import send_summary_email
 from services.pdf_exporter import generate_summary_pdf
 from core.speaker_intelligence import calculate_talk_time, calculate_participation, get_top_speaker
 from recording.recording_manager import start_recording, stop_recording, get_recording_duration, is_recording
-from calendar_extractor import extract_calendar_events
-from calendar_helper import create_calendar_event
+from services.calendar_extractor import extract_calendar_events
+from services.calendar_service import create_calendar_events
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("transcripts", exist_ok=True)
@@ -838,6 +839,7 @@ Sign in to continue.
 
         st.session_state["logged_in"] = True
         st.session_state["user"] = user
+        st.session_state["google_token"] = user["token"]
         st.session_state["page"] = "upload"
 
         st.rerun()
@@ -1208,70 +1210,6 @@ def results_page():
         else:
             st.text_area("", result.get("transcript", ""), height=300, label_visibility="collapsed")
 
-    # ───────────────────────────────────────────────
-# Calendar Events
-# ───────────────────────────────────────────────
-
-    st.markdown(
-        '<div class="section-header">📅 Calendar Events</div>',
-        unsafe_allow_html=True,
-    )
-
-    events = st.session_state.get("calendar_events", [])
-
-    if not events:
-        st.info("No calendar events detected.")
-    else:
-
-        selected_events = []
-
-        for i, event in enumerate(events):
-
-            st.markdown(f"""
-    ### {event['title']}
-
-    📅 **Date:** {event['date']}
-
-    🕒 **Time:** {event['time']}
-
-    ⏳ **Duration:** {event['duration_minutes']} minutes
-
-    📝 {event['description']}
-    """)
-
-            if st.checkbox(
-                f"Add '{event['title']}'",
-                key=f"calendar_event_{i}",
-                value=True
-            ):
-                selected_events.append(event)
-
-            st.divider()
-
-        if st.button("📅 Add Selected Events to Google Calendar"):
-
-            from datetime import datetime, timedelta
-
-            for event in selected_events:
-
-                start = datetime.strptime(
-                    event["date"] + " " + event["time"],
-                    "%Y-%m-%d %H:%M",
-                )
-
-                end = start + timedelta(
-                    minutes=event["duration_minutes"]
-                )
-
-                create_calendar_event(
-                    title=event["title"],
-                    start_time=start,
-                    end_time=end,
-                   description=event["description"],
-                )
-
-            st.success("Events added successfully!")
-
     # ── Chat with meeting ─────────────────────────────────────────────────
     st.markdown('<div class="section-header">Chat With This Meeting</div>', unsafe_allow_html=True)
     st.markdown('<div class="chat-card"><div class="cc-label">💬 Ask anything about this meeting</div>', unsafe_allow_html=True)
@@ -1292,6 +1230,161 @@ def results_page():
 
     st.markdown('</div>', unsafe_allow_html=True)  # close chat-card
 
+    # ─────────────────────────────────────────────────────────────
+    # Calendar Events
+    # ─────────────────────────────────────────────────────────────
+
+    events = st.session_state.get("calendar_events", [])
+
+    if events:
+
+        st.markdown(
+            '<div class="section-header">📅 Calendar Events</div>',
+            unsafe_allow_html=True,
+        )
+
+        edited_events = []
+
+        for i, event in enumerate(events):
+
+            with st.container(border=True):
+
+                st.markdown(f"## 📅 Event {i+1}")
+
+                enabled = st.checkbox(
+                    "Add this event",
+                    value=True,
+                    key=f"event_enable_{i}",
+                )
+
+                title = st.text_input(
+                    "Title",
+                    value=event["title"],
+                    key=f"title_{i}",
+                )
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+
+                    date = st.date_input(
+                        "Date",
+                        value=datetime.strptime(
+                            event["date"],
+                            "%Y-%m-%d"
+                        ).date(),
+                        key=f"date_{i}",
+                    )
+
+                with col2:
+
+                    time = st.time_input(
+                        "Time",
+                        value=datetime.strptime(
+                            event["time"],
+                            "%H:%M"
+                        ).time(),
+                        key=f"time_{i}",
+                    )
+
+                col3, col4 = st.columns(2)
+
+                with col3:
+
+                    duration = st.number_input(
+                        "Duration (minutes)",
+                        min_value=15,
+                        max_value=480,
+                        value=event.get(
+                            "duration_minutes",
+                            60,
+                        ),
+                        step=15,
+                        key=f"duration_{i}",
+                    )
+
+                with col4:
+
+                    reminder = st.selectbox(
+                        "Reminder",
+                        [5,10,15,30,60,120],
+                        index=[5,10,15,30,60,120].index(
+                            event.get(
+                                "reminder_minutes",
+                                30,
+                            )
+                        ),
+                        key=f"reminder_{i}",
+                    )
+
+                description = st.text_area(
+                    "Description",
+                    value=event.get(
+                        "description",
+                        "",
+                    ),
+                    key=f"description_{i}",
+                )
+
+                if enabled:
+
+                    edited_events.append({
+
+                        "title": title,
+
+                        "date": date.strftime("%Y-%m-%d"),
+
+                        "time": time.strftime("%H:%M"),
+
+                        "duration_minutes": duration,
+
+                        "description": description,
+
+                        "reminder_minutes": reminder,
+
+                    })
+
+        st.write("")
+
+        if st.button(
+            "📅 Add Selected Events to Google Calendar",
+            type="primary",
+            use_container_width=True,
+        ):
+
+            if not edited_events:
+
+                st.warning("Please select at least one event.")
+
+            else:
+
+                token = st.session_state.get("google_token")
+
+                if token is None:
+
+                    st.error("Please login with Google.")
+
+                else:
+
+                    try:
+
+                        created = create_calendar_events(
+                            edited_events,
+                            token,
+                        )
+
+                        st.success(
+                            f"✅ Added {len(created)} event(s) to Google Calendar!"
+                        )
+
+                    except Exception as e:
+
+                        st.error(str(e))
+
+    else:
+
+        st.info("No calendar events detected.")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE 3 — HISTORY
@@ -1307,7 +1400,7 @@ def history_page():
         key="history_search",
         label_visibility="collapsed",
     )
-    st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+    st.markdown('<dicreate_calendar_eventv class="gap-sm"></div>', unsafe_allow_html=True)
 
     meetings     = search_meetings(search_query) if search_query.strip() else get_all_meetings()
     total        = len(get_all_meetings()) if search_query.strip() else len(meetings)

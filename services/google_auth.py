@@ -24,7 +24,7 @@ SCOPES = [
     "openid",
     "email",
     "profile",
-    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
 ]
 
 REDIRECT_URI = "http://localhost:8501"
@@ -72,6 +72,8 @@ def google_login():
         st.error(f"Failed to fetch Google profile: {e}")
         return None
 
+    token["client_id"] = CLIENT_ID
+    token["client_secret"] = CLIENT_SECRET
     # -----------------------------
     # Return everything app.py needs
     # -----------------------------
