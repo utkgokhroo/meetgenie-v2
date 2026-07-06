@@ -663,23 +663,13 @@ def render_sidebar():
             mins, secs = divmod(int(elapsed), 60)
 
             st.markdown(
-                f"""
-                <div class="sb-stat-block"
-                     style="border-color:var(--red-border);background:var(--red-dim);">
+                f"""<div class="sb-stat-block" style="border-color:var(--red-border);background:var(--red-dim);display:flex;align-items:center;justify-content:space-between;">
                     <div style="display:flex;align-items:center;gap:8px;">
                         <div class="rec-dot"></div>
-                        <div class="sb-stat-num"
-                             style="color:var(--red);">
-                            {mins:02d}:{secs:02d}
-                        </div>
+                        <span class="sb-stat-num" style="color:var(--red);">{mins:02d}:{secs:02d}</span>
                     </div>
-
-                    <div class="sb-stat-label"
-                         style="color:#ffaaaa;">
-                        Recording active
-                    </div>
-                </div>
-                """,
+                    <span class="sb-stat-label" style="color:#ffaaaa;">Recording active</span>
+                </div>""",
                 unsafe_allow_html=True,
             )
 
