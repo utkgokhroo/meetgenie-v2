@@ -5,7 +5,7 @@ import tempfile
 import time
 from datetime import datetime
 from services.google_auth import google_login
-from services.database import save_user
+from services.database import save_user, get_user
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 import plotly.express as px
@@ -646,7 +646,7 @@ def render_sidebar():
             unsafe_allow_html=True,
         )
 
-        all_meetings = get_all_meetings()
+        all_meetings = get_all_meetings(st.session_state.user["id"])
 
         st.markdown(
             f"""
@@ -826,6 +826,9 @@ Sign in to continue.
             name=user["name"],
             credentials=user["credentials"],
         )
+
+        db_user = get_user(user["email"])
+        user["id"] = db_user[0]
 
         st.session_state["logged_in"] = True
         st.session_state["user"] = user
@@ -1067,7 +1070,7 @@ def results_page():
     with act_col1:
         if st.button("💾  Save to History", width='stretch', key="save_history_btn"):
             if overview:
-                save_meeting(st.session_state.filename, result)
+                save_meeting(st.session_state.user["id"], st.session_state.filename, result)
                 st.success("Saved.")
             else:
                 st.error("Cannot save — no overview generated.")
@@ -1390,10 +1393,9 @@ def history_page():
         key="history_search",
         label_visibility="collapsed",
     )
-    st.markdown('<dicreate_calendar_eventv class="gap-sm"></div>', unsafe_allow_html=True)
-
-    meetings     = search_meetings(search_query) if search_query.strip() else get_all_meetings()
-    total        = len(get_all_meetings()) if search_query.strip() else len(meetings)
+    st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+    meetings     = search_meetings(st.session_state.user["id"], search_query) if search_query.strip() else get_all_meetings(st.session_state.user["id"])
+    total        = len(get_all_meetings(st.session_state.user["id"])) if search_query.strip() else len(meetings)
     count_label  = (
         f"{len(meetings)} result{'s' if len(meetings) != 1 else ''} for \"{search_query}\""
         if search_query.strip()
@@ -1466,7 +1468,7 @@ def history_page():
         with del_col:
             st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
             if st.button("Delete", key=f"del_{meeting_id}", help="Delete this meeting"):
-                delete_meeting(meeting_id)
+                delete_meeting(meeting_id, st.session_state.user["id"])
                 st.rerun()
 
 
