@@ -1016,10 +1016,12 @@ def upload_page():
         st.markdown("""
         <div class="how-card">
             <div class="how-label">How it works</div>
-            <div class="how-step"><div class="how-num">1</div><div class="how-text">Upload a recording (MP3/WAV/MP4) or a text transcript</div></div>
-            <div class="how-step"><div class="how-num">2</div><div class="how-text">Whisper transcribes your audio with speaker detection</div></div>
-            <div class="how-step"><div class="how-num">3</div><div class="how-text">Gemini AI extracts insights, actions, risks and decisions</div></div>
-            <div class="how-step"><div class="how-num">4</div><div class="how-text">Download as PDF, email to your team, or save to History</div></div>
+            <div class="how-step"><div class="how-num">1</div><div class="how-text">Sign in with your Google account to enable Gmail and Google Calendar integration</div></div>
+            <div class="how-step"><div class="how-num">2</div><div class="how-text">Upload a recording (MP3/WAV/MP4) or a text transcript</div></div>
+            <div class="how-step"><div class="how-num">3</div><div class="how-text">Whisper transcribes your audio with speaker detection</div></div>
+            <div class="how-step"><div class="how-num">4</div><div class="how-text">Gemini AI extracts insights, actions, risks, decisions, and meeting events</div></div>
+            <div class="how-step"><div class="how-num">5</div><div class="how-text">Add detected meeting events directly to your Google Calendar</div></div>
+            <div class="how-step"><div class="how-num">6</div><div class="how-text">Download as PDF, email to your team, or save to History</div></div>
         </div>
         """, unsafe_allow_html=True)
 
