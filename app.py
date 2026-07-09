@@ -19,6 +19,7 @@ from core.speaker_intelligence import calculate_talk_time, calculate_participati
 from recording.recording_manager import start_recording, stop_recording, get_recording_duration, is_recording
 from services.calendar_extractor import extract_calendar_events
 from services.calendar_service import create_calendar_events
+from services.question_suggester import generate_questions
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("transcripts", exist_ok=True)
@@ -904,6 +905,7 @@ def upload_page():
                     st.session_state.filename = meeting_name.strip()
                     st.session_state.chat_answer = None
                     st.session_state.pop("calendar_events", None)
+                    st.session_state.pop("suggested_questions", None)
 
                     def _process_upload(path):
                         try:
@@ -954,6 +956,7 @@ def upload_page():
                     )
                     st.session_state.chat_answer = None
                     st.session_state.pop("calendar_events", None)
+                    st.session_state.pop("suggested_questions", None)
                     st.session_state.page = "results"
                 except Exception as exc:
                     st.session_state.recording_error = str(exc)
@@ -1204,20 +1207,58 @@ def results_page():
             st.markdown(html_segs, unsafe_allow_html=True)
         else:
             st.text_area("", result.get("transcript", ""), height=300, label_visibility="collapsed")
-
+    
+    if "suggested_questions" not in st.session_state:
+        st.session_state.suggested_questions = generate_questions(
+            result.get("transcript", "")
+        )
     # ── Chat with meeting ─────────────────────────────────────────────────
     st.markdown('<div class="section-header">Chat With This Meeting</div>', unsafe_allow_html=True)
-    st.markdown('<div class="chat-card"><div class="cc-label">💬 Ask anything about this meeting</div>', unsafe_allow_html=True)
-
+    
     question = st.text_input(
         "Ask a question",
-        placeholder="e.g. What action items were assigned to Sarah?",
+        placeholder="💬 Ask anything about this meeting",
         key="chat_question",
         label_visibility="collapsed",
     )
+
+    st.caption("Suggested Questions")
+
+    cols = st.columns(min(3, len(st.session_state.suggested_questions)))
+
+    for i, q in enumerate(st.session_state.suggested_questions):
+        with cols[i % len(cols)]:
+            if st.button(q, key=f"suggested_q_{i}", use_container_width=True):
+                question = q
     if question:
+        meeting_context = f"""
+    Speaker Count:
+    {result.get('speaker_count', 'Unknown')}
+
+    Top Speaker:
+    {result.get('top_speaker', 'Unknown')}
+
+    Participation:
+    {result.get('participation', '')}
+
+    Talk Time:
+    {result.get('talk_time', '')}
+
+    Speaker Turns:
+    {result.get('speaker_turns', '')}
+
+    Speaker Sentiment:
+    {result.get('speaker_sentiment', '')}
+
+    Transcript:
+    {result.get('transcript', '')}
+    """
+
         with st.spinner("Thinking…"):
-            answer = ask_meeting_question(result.get("transcript", ""), question)
+            answer = ask_meeting_question(
+                meeting_context,
+                question
+            )
             st.session_state.chat_answer = answer
 
     if st.session_state.chat_answer:

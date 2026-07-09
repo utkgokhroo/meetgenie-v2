@@ -1,8 +1,5 @@
 """
 Chat / Q&A over a meeting transcript via Gemini.
-
-Fix: previously created its own genai.Client with its own load_dotenv()
-call. Now uses the shared gemini_client module.
 """
 
 from __future__ import annotations
@@ -10,21 +7,50 @@ from __future__ import annotations
 from services.gemini_client import get_client, MODEL_NAME
 
 
-def ask_meeting_question(transcript: str, question: str) -> str:
-    prompt = f"""You are a meeting assistant.
+def ask_meeting_question(meeting_context: str, question: str) -> str:
+    prompt = f"""
+You are MeetGenie, an intelligent AI Meeting Copilot.
 
-Use ONLY the meeting transcript below to answer the question.
-If the answer is not in the transcript, say:
-"I could not find that information in the meeting transcript."
+You have access to meeting information including:
+- transcript
+- speaker information
+- speaker count
+- top speaker
+- participation statistics
+- talk time
+- speaker sentiment
 
-Meeting Transcript:
-{transcript}
+Your job is to answer ANY question related to the meeting.
 
-Question:
-{question}"""
+You may:
+- summarize discussions
+- explain what a speaker meant
+- elaborate on ideas discussed in the meeting
+- identify action items and decisions
+- provide recommendations and next steps
+- answer follow-up questions
+- count speakers
+- identify who said what
+- determine who spoke the most
+- explain a specific speaker's statements
+- make simple inferences that are clearly supported by the meeting data
+
+Be helpful, conversational, and concise.
+
+If the information truly cannot be determined from the meeting data, say:
+
+"I could not determine that from the meeting data."
+
+Meeting Data:
+{meeting_context}
+
+User Question:
+{question}
+"""
 
     response = get_client().models.generate_content(
         model=MODEL_NAME,
         contents=prompt,
     )
+
     return response.text
