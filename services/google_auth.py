@@ -1,5 +1,7 @@
 import json
+import secrets
 from pathlib import Path
+from typing import Optional
 
 import requests
 import streamlit as st
@@ -36,10 +38,78 @@ oauth2 = OAuth2Component(
     TOKEN_URL,
 )
 
+# Query param key used to carry the session token across refreshes
+SESSION_PARAM = "sid"
 
-def google_login():
+
+def _fetch_profile(access_token: str) -> Optional[dict]:
+    """Fetch Google user profile. Returns None on failure."""
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException:
+        return None
+
+
+def _refresh_access_token(token: dict) -> Optional[dict]:
+    """
+    Use the stored refresh_token to obtain a new access_token from Google.
+    Returns the updated token dict, or None if refresh fails.
+    """
+    refresh_token = token.get("refresh_token")
+    if not refresh_token:
+        return None
+
+    try:
+        resp = requests.post(
+            TOKEN_URL,
+            data={
+                "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        new_data = resp.json()
+
+        # Merge — Google only returns a new access_token, not a new refresh_token
+        updated = {**token, **new_data}
+        # Keep the original refresh_token if Google didn't issue a new one
+        if "refresh_token" not in new_data:
+            updated["refresh_token"] = refresh_token
+        return updated
+
+    except requests.RequestException:
+        return None
+
+
+def _build_user_dict(token: dict, profile: dict) -> dict:
+    """Build the user dict that app.py stores in session_state."""
+    token["client_id"] = CLIENT_ID
+    token["client_secret"] = CLIENT_SECRET
+    return {
+        "email": profile["email"],
+        "name": profile.get("name", ""),
+        "picture": profile.get("picture", ""),
+        "credentials": json.dumps(token),
+        "token": token,
+    }
+
+
+def google_login() -> Optional[dict]:
+    """
+    Render the Google OAuth button and return a user dict on success,
+    or None if the user has not yet authenticated.
+    """
     result = oauth2.authorize_button(
-        name="🔐 Sign in with Google",
+        name="Sign-in with Google",
         redirect_uri=REDIRECT_URI,
         scope=" ".join(SCOPES),
         key="google_login",
@@ -49,38 +119,87 @@ def google_login():
         return None
 
     token = result["token"]
-
-    # Save token for this Streamlit session
-    st.session_state["google_token"] = token
-
-    # -----------------------------
-    # Fetch Google profile
-    # -----------------------------
-    try:
-        response = requests.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={
-                "Authorization": f"Bearer {token['access_token']}"
-            },
-            timeout=10,
-        )
-
-        response.raise_for_status()
-        profile = response.json()
-
-    except requests.RequestException as e:
-        st.error(f"Failed to fetch Google profile: {e}")
-        return None
-
     token["client_id"] = CLIENT_ID
     token["client_secret"] = CLIENT_SECRET
-    # -----------------------------
-    # Return everything app.py needs
-    # -----------------------------
-    return {
-        "email": profile["email"],
-        "name": profile.get("name", ""),
-        "picture": profile.get("picture", ""),
-        "credentials": json.dumps(token),   # Ready to save in SQLite
-        "token": token,                     # Keep as dict for current session if needed
-    }
+
+    profile = _fetch_profile(token["access_token"])
+    if not profile:
+        st.error("Failed to fetch Google profile.")
+        return None
+
+    st.session_state["google_token"] = token
+    return _build_user_dict(token, profile)
+
+
+def restore_session() -> Optional[dict]:
+    """
+    Attempt to restore a logged-in session after a browser refresh.
+
+    Flow:
+    1. Check for ?sid=<token> in the URL query params.
+    2. Look up the token in the sessions DB table → get the user's email.
+    3. Load the user's stored credentials from the users table.
+    4. Try to refresh the access token (it may have expired).
+    5. Return the user dict if everything succeeds, else None.
+
+    Returns None if the session cannot be restored (invalid token,
+    no stored credentials, refresh failed). The caller should then
+    show the login page.
+    """
+    from services.database import get_session, get_user, update_user_credentials
+
+    sid = st.query_params.get(SESSION_PARAM)
+    if not sid:
+        return None
+
+    email = get_session(sid)
+    if not email:
+        # Token is invalid or was deleted (sign-out on another tab)
+        return None
+
+    db_user = get_user(email)
+    if not db_user:
+        return None
+
+    user_id, db_email, db_name, credentials_json, _ = db_user  # _ = created_at
+
+    try:
+        token = json.loads(credentials_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    # Try to use the current access token first
+    profile = _fetch_profile(token.get("access_token", ""))
+
+    if not profile:
+        # Access token expired — try to refresh
+        refreshed = _refresh_access_token(token)
+        if not refreshed:
+            # Refresh token also invalid — user must log in again
+            return None
+        token = refreshed
+        profile = _fetch_profile(token["access_token"])
+        if not profile:
+            return None
+        # Persist the refreshed token
+        update_user_credentials(email, json.dumps(token))
+
+    user = _build_user_dict(token, profile)
+    user["id"] = user_id
+    return user
+
+
+def create_session_token() -> str:
+    """Generate a cryptographically random session token."""
+    return secrets.token_urlsafe(32)
+
+
+def set_session_param(token: str) -> None:
+    """Write the session token into the URL query params."""
+    st.query_params[SESSION_PARAM] = token
+
+
+def clear_session_param() -> None:
+    """Remove the session token from the URL query params."""
+    if SESSION_PARAM in st.query_params:
+        del st.query_params[SESSION_PARAM]

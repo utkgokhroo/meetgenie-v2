@@ -41,14 +41,49 @@ def split_transcript(text: str, max_words: int = _MAX_WORDS_PER_CHUNK) -> List[s
 
 def _normalise_summary(parsed: Dict[str, Any]) -> Dict[str, Any]:
     summary = EMPTY_SUMMARY.copy()
+
     for key in summary:
+
         value = parsed.get(key, summary[key])
+
         if key == "overview":
             summary[key] = str(value or "").strip()
+
+        elif key == "task_assignments":
+
+            cleaned = []
+
+            if isinstance(value, list):
+
+                for item in value:
+
+                    if isinstance(item, dict):
+
+                        cleaned.append({
+                            "assignee": str(
+                                item.get("assignee")
+                                or item.get("owner")
+                                or ""
+                            ).strip(),
+                            "task": str(
+                                item.get("task", "")
+                            ).strip(),
+                        })
+
+            summary[key] = cleaned
+
         elif isinstance(value, list):
-            summary[key] = [str(item).strip() for item in value if str(item).strip()]
+
+            summary[key] = [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+
         elif value:
+
             summary[key] = [str(value).strip()]
+
     return summary
 
 
@@ -121,16 +156,19 @@ def _summarize_chunks(chunks: List[str]) -> Dict[str, Any]:
         "Your response must be ONLY a single valid JSON object. "
         "Do not include any text before or after the JSON. "
         "Do not use markdown fences. Do not explain anything.\n\n"
+        "- For task_assignments, always use the key 'assignee', never 'owner'.\n"
+        "- If no specific person is mentioned, set assignee to an empty string.\n\n"
         "Return exactly this structure:\n"
         '{"overview":"","discussion_points":[],"action_items":[],'
-        '"decisions":[],"task_assignments":[],"next_steps":[],'
+        '"decisions":[],"task_assignments":[{"assignee":"","task":""}],"next_steps":[],'
         '"risks":[],"questions":[],"follow_ups":[]}\n\n'
         "Rules:\n"
         "- overview: 2-4 sentence summary of the meeting\n"
         "- discussion_points: list of key topics discussed\n"
         "- action_items: list of tasks assigned, include owner if named\n"
         "- decisions: list of decisions made\n"
-        "- task_assignments: list of who is responsible for what\n"
+        "- task_assignments: list of JSON objects in the format "
+        '{"assignee":"Person responsible","task":"Task description"}\n'
         "- next_steps: list of planned next actions\n"
         "- risks: list of risks or blockers mentioned\n"
         "- questions: list of unanswered questions raised\n"

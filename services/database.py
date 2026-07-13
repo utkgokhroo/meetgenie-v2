@@ -56,6 +56,19 @@ def init_db() -> None:
             )
         """)
 
+        # -------------------------
+        # Persistent sessions table
+        # Maps a random token → user email so we can restore sessions
+        # on browser refresh without asking the user to log in again.
+        # -------------------------
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token      TEXT PRIMARY KEY,
+                email      TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
 def save_meeting(user_id: int, filename: str, result: Dict[str, Any]) -> None:
     with _get_conn() as conn:
         conn.execute(
@@ -172,7 +185,8 @@ def get_user(email: str) -> Optional[Tuple]:
                 id,
                 email,
                 name,
-                credentials
+                credentials,
+                created_at
             FROM users
             WHERE email = ?
             """,
@@ -233,6 +247,69 @@ def get_all_users() -> List[Tuple]:
             ORDER BY created_at DESC
             """
         ).fetchall()
+
+
+def get_dashboard_stats(user_id: int) -> Dict[str, Any]:
+    """Return meeting count and total hours processed for the dashboard."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) as meeting_count,
+                COALESCE(SUM(duration), 0) as total_seconds
+            FROM meetings
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        return {
+            "meeting_count": row[0] if row else 0,
+            "hours_processed": round((row[1] if row else 0) / 3600, 1),
+        }
+
+
+def get_recent_meetings(user_id: int, limit: int = 5) -> List[Tuple]:
+    """Return the most recent N meetings for the dashboard."""
+    with _get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT id, filename, created_at, overview, summary_json
+            FROM meetings
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+
+
+# ==========================================================
+# SESSION FUNCTIONS
+# ==========================================================
+
+def create_session(token: str, email: str) -> None:
+    """Persist a session token → email mapping."""
+    with _get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (token, email) VALUES (?, ?)",
+            (token, email),
+        )
+
+
+def get_session(token: str) -> Optional[str]:
+    """Return the email for a session token, or None if not found."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT email FROM sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+        return row[0] if row else None
+
+
+def delete_session(token: str) -> None:
+    """Remove a session token (called on sign-out)."""
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
 if __name__ == "__main__":

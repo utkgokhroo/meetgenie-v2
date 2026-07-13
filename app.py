@@ -3,22 +3,32 @@ import json
 import os
 import tempfile
 import time
-from datetime import datetime
-from services.google_auth import google_login
-from services.database import save_user, get_user
+from datetime import datetime, timedelta
+from services.google_auth import (
+    google_login,
+    restore_session,
+    create_session_token,
+    set_session_param,
+    clear_session_param,
+)
+from services.database import (
+    save_user, get_user, create_session, delete_session,
+    init_db, save_meeting, delete_meeting,
+    get_all_meetings, search_meetings,
+    get_dashboard_stats, get_recent_meetings,
+)
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 import plotly.express as px
 from core.sentiment import get_dominant_sentiment
 from core.processor import process_video
 from core.chat_with_meeting import ask_meeting_question
-from services.database import init_db, save_meeting, delete_meeting, get_all_meetings, search_meetings
 from services.email_sender import send_summary_email
 from services.pdf_exporter import generate_summary_pdf
 from core.speaker_intelligence import calculate_talk_time, calculate_participation, get_top_speaker
 from recording.recording_manager import start_recording, stop_recording, get_recording_duration, is_recording
 from services.calendar_extractor import extract_calendar_events
-from services.calendar_service import create_calendar_events
+from services.calendar_service import create_calendar_events, get_calendar_service
 from services.question_suggester import generate_questions
 
 os.makedirs("uploads", exist_ok=True)
@@ -44,7 +54,6 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
 
-/* ── Design tokens ─────────────────────────────────────────────────────── */
 :root {
     --bg-base:        #0d0f18;
     --bg-surface:     #131520;
@@ -78,7 +87,6 @@ st.markdown("""
     --radius-lg:      14px;
 }
 
-/* ── Global reset ───────────────────────────────────────────────────────── */
 html, body { font-family: var(--font-body) !important; background: var(--bg-base) !important; color: var(--text-primary) !important; }
 #MainMenu, footer, header { visibility: hidden; }
 
@@ -93,7 +101,6 @@ html, body { font-family: var(--font-body) !important; background: var(--bg-base
     font-family: var(--font-body) !important;
 }
 
-/* ── Typography ─────────────────────────────────────────────────────────── */
 [data-testid="stMarkdown"],
 [data-testid="stMarkdownContainer"],
 [data-testid="stText"] { color: var(--text-primary) !important; }
@@ -111,7 +118,6 @@ html, body { font-family: var(--font-body) !important; background: var(--bg-base
 }
 hr { border-color: var(--border) !important; }
 
-/* ── Sidebar ────────────────────────────────────────────────────────────── */
 [data-testid="stSidebar"],
 [data-testid="stSidebarContent"] {
     background-color: var(--bg-surface) !important;
@@ -120,7 +126,17 @@ hr { border-color: var(--border) !important; }
 [data-testid="stSidebarContent"] * { color: var(--text-primary) !important; }
 [data-testid="stSidebarNav"] { display: none; }
 
-/* ── Text input ─────────────────────────────────────────────────────────── */
+/* Hide the button text — sidebar nav uses HTML labels over invisible buttons */
+.sb-btn-wrap button {
+    opacity: 0 !important;
+    position: absolute !important;
+    height: 44px !important;
+    margin-top: -44px !important;
+    width: 100% !important;
+    cursor: pointer !important;
+    z-index: 10 !important;
+}
+
 [data-testid="stTextInput"],
 [data-testid="stTextInputRootElement"] { background-color: transparent !important; }
 [data-testid="stTextInput"] input,
@@ -143,7 +159,6 @@ hr { border-color: var(--border) !important; }
     outline: none !important;
 }
 
-/* ── File uploader ──────────────────────────────────────────────────────── */
 [data-testid="stFileUploader"] { background-color: transparent !important; }
 [data-testid="stFileUploaderDropzone"] {
     background-color: var(--bg-surface) !important;
@@ -159,7 +174,6 @@ hr { border-color: var(--border) !important; }
 [data-testid="stFileChip"] { background-color: var(--bg-elevated) !important; border-color: var(--border-mid) !important; }
 [data-testid="stFileChipName"] { color: var(--text-secondary) !important; }
 
-/* ── Buttons ────────────────────────────────────────────────────────────── */
 [data-testid="stButton"] button,
 [data-testid="stDownloadButton"] button {
     border-radius: var(--radius-sm) !important;
@@ -194,7 +208,6 @@ hr { border-color: var(--border) !important; }
     border-color: #ff3333 !important;
 }
 
-/* ── Alerts ─────────────────────────────────────────────────────────────── */
 [data-testid="stAlert"],
 [data-testid="stAlertContainer"] {
     border-radius: var(--radius-sm) !important;
@@ -203,7 +216,6 @@ hr { border-color: var(--border) !important; }
 }
 [data-testid="stAlertContainer"][data-baseweb="notification"] { background-color: var(--bg-surface) !important; }
 
-/* ── Expanders ──────────────────────────────────────────────────────────── */
 [data-testid="stExpander"] {
     background-color: var(--bg-surface) !important;
     border: 1px solid var(--border) !important;
@@ -224,32 +236,23 @@ hr { border-color: var(--border) !important; }
     border-top: 1px solid var(--border) !important;
 }
 
-/* ── Spinner ────────────────────────────────────────────────────────────── */
 [data-testid="stSpinner"] p,
 [data-testid="stSpinner"] span { color: var(--text-muted) !important; }
 
-/* ── Metrics ────────────────────────────────────────────────────────────── */
 [data-testid="stMetric"] { background: transparent; }
 [data-testid="stMetricLabel"] { color: var(--text-muted) !important; font-size: 12px !important; }
 [data-testid="stMetricValue"] { color: var(--text-primary) !important; }
 
-/* ── Columns ────────────────────────────────────────────────────────────── */
 [data-testid="stColumn"] { background-color: transparent !important; }
 
-/* ── Scrollbar ──────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg-base); }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 
-/* ── Plotly charts ──────────────────────────────────────────────────────── */
 .js-plotly-plot .plotly .bg { fill: transparent !important; }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   CUSTOM COMPONENTS
-═══════════════════════════════════════════════════════════════════════════ */
-
-/* Nav bar */
+/* ── Nav bar ── */
 .nav-bar {
     display: flex;
     align-items: center;
@@ -272,150 +275,283 @@ hr { border-color: var(--border) !important; }
     text-transform: uppercase;
 }
 
-/* Sidebar nav items */
-.sb-nav-item {
+/* ── Sidebar navigation ── */
+.sb-logo {
+    font-size: 20px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.4px;
+    padding: 4px 0 24px;
+}
+.sb-logo span { color: var(--accent); }
+.sb-user-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-bottom: 20px;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    margin-bottom: 4px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--text-muted);
-    transition: all 0.15s;
 }
-.sb-nav-item.active {
-    background: var(--accent-dim);
-    color: var(--accent-light);
-    border: 1px solid var(--border-accent);
+.sb-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
 }
-.sb-nav-item:not(.active):hover { background: var(--bg-elevated); color: var(--text-primary); }
+.sb-user-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.sb-user-email { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }
 .sb-section-label {
     font-size: 10px;
     font-family: var(--font-mono);
     color: var(--text-ghost);
     text-transform: uppercase;
     letter-spacing: 1px;
-    padding: 4px 12px;
-    margin: 12px 0 6px;
+    padding: 4px 0;
+    margin: 16px 0 6px;
 }
+.sb-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 2px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: all 0.15s;
+    cursor: pointer;
+    position: relative;
+}
+.sb-nav-item.active {
+    background: var(--accent-dim);
+    color: var(--accent-light);
+    border: 1px solid var(--border-accent);
+}
+.sb-nav-item:not(.active):hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+.sb-divider { border-top: 1px solid var(--border); margin: 12px 0; }
 .sb-stat-block {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 14px;
+    padding: 12px 14px;
     margin-bottom: 8px;
 }
-.sb-stat-block .sb-stat-num { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.sb-stat-block .sb-stat-label { font-size: 11px; color: var(--text-faint); margin-top: 2px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.6px; }
+.sb-stat-num { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.sb-stat-label { font-size: 10px; color: var(--text-faint); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 2px; }
 
-/* Page titles */
-.page-title { font-size: 26px; font-weight: 700; color: #fff; letter-spacing: -0.5px; margin-bottom: 4px; }
-.page-subtitle { font-size: 14px; color: var(--text-muted); margin-bottom: 28px; line-height: 1.5; }
-
-/* Section header (replaces st.subheader) */
-.section-header {
-    font-size: 12px;
+/* ── Dashboard ── */
+.dash-stat-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.dash-stat-num { font-size: 32px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; }
+.dash-stat-label { font-size: 12px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.8px; }
+.dash-stat-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.dash-section-title {
+    font-size: 11px;
     font-family: var(--font-mono);
     color: var(--text-faint);
     text-transform: uppercase;
     letter-spacing: 1px;
-    margin: 24px 0 12px;
-    padding-bottom: 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+    margin-top: 28px;
+}
+.dash-meeting-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 12px 0;
     border-bottom: 1px solid var(--border);
 }
-
-/* Summary section cards */
-.section-card {
+.dash-meeting-row:last-child { border-bottom: none; }
+.dash-meeting-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.dash-meeting-date { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); margin-top: 2px; }
+.dash-meeting-preview { font-size: 12px; color: var(--text-muted); margin-top: 4px; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dash-cal-event {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}
+.dash-cal-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.dash-cal-time { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 3px; }
+.dash-quick-action {
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 20px 22px;
+    padding: 18px 20px;
+    text-align: center;
+    transition: border-color 0.15s;
+}
+.dash-quick-action:hover { border-color: var(--border-hover); }
+.dash-qa-icon { font-size: 24px; margin-bottom: 8px; }
+.dash-qa-label { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.dash-qa-sub { font-size: 12px; color: var(--text-muted); }
+
+/* ── Profile ── */
+.profile-hero {
+    background: linear-gradient(135deg, #141c38 0%, var(--bg-surface) 100%);
+    border: 1px solid var(--border-accent);
+    border-radius: var(--radius-lg);
+    padding: 36px 40px;
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    margin-bottom: 28px;
+}
+.profile-avatar-wrap { position: relative; flex-shrink: 0; }
+.profile-avatar {
+    width: 96px; height: 96px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid var(--border-accent);
+    display: block;
+}
+.profile-avatar-fallback {
+    width: 96px; height: 96px; border-radius: 50%;
+    background: var(--accent-dim); border: 3px solid var(--border-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 38px; flex-shrink: 0;
+}
+.profile-info { flex: 1; min-width: 0; }
+.profile-name { font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.5px; margin-bottom: 6px; }
+.profile-email-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border-mid);
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 12px; font-family: var(--font-mono); color: var(--text-muted);
+}
+.profile-google-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border-mid);
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 11px; color: var(--text-muted); margin-top: 10px;
+}
+.profile-stat-row { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+.profile-stat-card {
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 22px; flex: 1; min-width: 140px;
+}
+.profile-stat-num { font-size: 28px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px; }
+.profile-stat-label { font-size: 11px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.8px; margin-top: 4px; }
+.profile-detail-grid {
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; margin-bottom: 24px;
+}
+.profile-detail-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.profile-detail-row:last-child { border-bottom: none; }
+.profile-detail-label { font-size: 13px; font-weight: 500; color: var(--text-muted); }
+.profile-detail-value { font-size: 13px; color: var(--text-primary); text-align: right; }
+.profile-detail-value.mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+.profile-connected-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--green-dim); border: 1px solid #1a4d2e;
+    border-radius: 20px; padding: 3px 10px;
+    font-size: 11px; color: var(--green);
+}
+.profile-logout-zone {
+    background: var(--red-dim); border: 1px solid var(--red-border);
+    border-radius: var(--radius); padding: 20px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.profile-logout-text { font-size: 14px; font-weight: 500; color: #ffaaaa; }
+.profile-logout-sub { font-size: 12px; color: var(--text-faint); margin-top: 3px; }
+
+/* ── Meeting History cards ── */
+.hcard {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0;
     margin-bottom: 12px;
-    height: 100%;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    overflow: hidden;
 }
-.section-card h4 {
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    margin: 0 0 12px;
+.hcard:hover { border-color: var(--border-hover); box-shadow: 0 2px 16px rgba(0,0,0,0.25); }
+.hcard-header { padding: 18px 20px 14px; }
+.hcard-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.hcard-title { font-size: 15px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.2px; }
+.hcard-date { font-size: 11px; font-family: var(--font-mono); color: var(--text-faint); white-space: nowrap; margin-top: 2px; }
+.hcard-overview { font-size: 13px; color: var(--text-muted); line-height: 1.6;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hcard-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.hcard-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--bg-elevated); border: 1px solid var(--border-mid);
+    border-radius: 4px; padding: 3px 8px;
+    font-size: 11px; font-family: var(--font-mono); color: var(--text-faint);
 }
+.hcard-chip.accent { color: var(--accent-light); border-color: var(--border-accent); background: var(--accent-dim); }
+.hcard-actions {
+    display: flex; align-items: center; gap: 0;
+    border-top: 1px solid var(--border);
+    background: var(--bg-elevated);
+}
+.history-empty {
+    text-align: center; padding: 60px 24px;
+    background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.history-empty-icon { font-size: 40px; margin-bottom: 16px; }
+.history-empty-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
+.history-empty-sub { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.settings-row:last-child { border-bottom: none; }
+.settings-label { font-size: 14px; font-weight: 500; color: var(--text-primary); }
+.settings-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.page-title { font-size: 26px; font-weight: 700; color: #fff; letter-spacing: -0.5px; margin-bottom: 4px; }
+.page-subtitle { font-size: 14px; color: var(--text-muted); margin-bottom: 28px; line-height: 1.5; }
+.section-header {
+    font-size: 12px; font-family: var(--font-mono); color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 1px; margin: 24px 0 12px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.section-card {
+    background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px; margin-bottom: 12px; height: 100%;
+}
+.section-card h4 { font-size: 10px; font-family: var(--font-mono); color: var(--accent);
+    text-transform: uppercase; letter-spacing: 1.4px; margin: 0 0 12px; }
 .section-card p, .section-card li { color: var(--text-secondary); font-size: 13.5px; line-height: 1.65; margin: 0; }
 .section-card ul { padding-left: 16px; margin: 0; }
 .section-card li { margin-bottom: 5px; }
 .section-card .empty { color: var(--text-ghost); font-style: italic; font-size: 13px; }
-
-/* Overview card */
 .overview-card {
     background: linear-gradient(135deg, #141c38 0%, var(--bg-surface) 100%);
-    border: 1px solid var(--border-accent);
-    border-radius: var(--radius-lg);
-    padding: 24px 28px;
-    margin-bottom: 20px;
+    border: 1px solid var(--border-accent); border-radius: var(--radius-lg); padding: 24px 28px; margin-bottom: 20px;
 }
-.overview-card .ov-label {
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--accent-light);
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    margin: 0 0 10px;
-}
+.overview-card .ov-label { font-size: 10px; font-family: var(--font-mono); color: var(--accent-light);
+    text-transform: uppercase; letter-spacing: 1.4px; margin: 0 0 10px; }
 .overview-card p { color: #d8dcee; font-size: 14.5px; line-height: 1.75; margin: 0; }
-
-/* Stat badges (summary page top row) */
 .stat-row { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }
-.stat-badge {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 12px 16px;
-    flex: 1;
-    min-width: 100px;
-}
+.stat-badge { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 12px 16px; flex: 1; min-width: 100px; }
 .stat-badge .stat-num { font-size: 20px; font-weight: 700; color: var(--text-primary); display: block; }
 .stat-badge .stat-label { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.8px; font-family: var(--font-mono); }
-
-/* Meta pill row (language, duration) */
 .meta-row { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
-.meta-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-mid);
-    border-radius: 20px;
-    padding: 5px 12px;
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--text-muted);
-}
-
-/* Action bar (Save / Download / Email) */
-.action-bar {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 14px 18px;
-    margin: 20px 0;
-    flex-wrap: wrap;
-}
-
-/* Transcript segment */
-.seg-block {
-    background: var(--bg-elevated);
-    border-left: 3px solid var(--border-accent);
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-    padding: 10px 14px;
-    margin-bottom: 10px;
-}
+.meta-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-elevated);
+    border: 1px solid var(--border-mid); border-radius: 20px; padding: 5px 12px;
+    font-size: 12px; font-family: var(--font-mono); color: var(--text-muted); }
+.seg-block { background: var(--bg-elevated); border-left: 3px solid var(--border-accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 10px 14px; margin-bottom: 10px; }
 .seg-header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
 .seg-speaker { font-size: 12px; font-weight: 600; color: var(--accent-light); font-family: var(--font-mono); }
 .seg-time { font-size: 11px; color: var(--text-ghost); font-family: var(--font-mono); }
@@ -423,123 +559,51 @@ hr { border-color: var(--border) !important; }
 .seg-sentiment { font-size: 11px; color: var(--text-ghost); margin-top: 4px; font-family: var(--font-mono); }
 .seg-sentiment.POS { color: #22c55e; }
 .seg-sentiment.NEG { color: var(--red); }
-
-/* Speaker analytics card */
-.analytics-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px 22px;
-    margin-bottom: 12px;
-}
-.analytics-card .ac-header { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
-.speaker-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.analytics-card { background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px; margin-bottom: 12px; }
+.analytics-card .ac-header { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
+.speaker-row { display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; border-bottom: 1px solid var(--border); }
 .speaker-row:last-child { border-bottom: none; }
 .speaker-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .speaker-meta { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
-.sentiment-pill {
-    font-size: 10px;
-    font-family: var(--font-mono);
-    padding: 2px 8px;
-    border-radius: 10px;
-    letter-spacing: 0.5px;
-}
+.sentiment-pill { font-size: 10px; font-family: var(--font-mono); padding: 2px 8px;
+    border-radius: 10px; letter-spacing: 0.5px; }
 .sentiment-pill.POS { background: var(--green-dim); color: var(--green); border: 1px solid #1a4d2e; }
 .sentiment-pill.NEU { background: var(--bg-elevated); color: var(--text-faint); border: 1px solid var(--border-mid); }
 .sentiment-pill.NEG { background: var(--red-dim); color: var(--red); border: 1px solid var(--red-border); }
-
-/* Chat card */
-.chat-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px 22px;
-    margin-bottom: 12px;
-}
-.chat-card .cc-label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 12px; }
-.chat-answer {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-mid);
-    border-radius: var(--radius-sm);
-    padding: 14px;
-    font-size: 13.5px;
-    color: var(--text-secondary);
-    line-height: 1.65;
-    margin-top: 12px;
-}
-
-/* Meeting history cards */
-.meeting-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px 20px;
-    margin-bottom: 10px;
-    transition: border-color 0.15s;
-}
+.chat-answer { background: var(--bg-elevated); border: 1px solid var(--border-mid);
+    border-radius: var(--radius-sm); padding: 14px; font-size: 13.5px; color: var(--text-secondary);
+    line-height: 1.65; margin-top: 12px; }
+.meeting-card { background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 20px; margin-bottom: 10px; transition: border-color 0.15s; }
 .meeting-card:hover { border-color: var(--border-hover); }
 .meeting-card-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px; }
 .meeting-card-meta { font-size: 11px; font-family: var(--font-mono); color: var(--text-faint); margin-bottom: 8px; }
-.meeting-card-overview { font-size: 13px; color: var(--text-muted); line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-
-/* Recording controls */
-.rec-container {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px 22px;
-    margin: 16px 0;
-}
-.rec-label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
-.rec-status {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--red-dim);
-    border: 1px solid var(--red-border);
-    border-radius: var(--radius-sm);
-    padding: 10px 14px;
-    margin-top: 12px;
-}
-.rec-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--red); flex-shrink: 0;
-    animation: rec-pulse 1.4s ease-in-out infinite;
-}
+.meeting-card-overview { font-size: 13px; color: var(--text-muted); line-height: 1.55;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rec-container { background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px; margin: 16px 0; }
+.rec-label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
+.rec-status { display: flex; align-items: center; gap: 10px; background: var(--red-dim);
+    border: 1px solid var(--red-border); border-radius: var(--radius-sm); padding: 10px 14px; margin-top: 12px; }
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0;
+    animation: rec-pulse 1.4s ease-in-out infinite; }
 .rec-status-text { font-size: 13px; font-family: var(--font-mono); color: #ffaaaa; }
 .rec-timer { font-size: 13px; font-family: var(--font-mono); color: var(--red); margin-left: auto; }
-
-/* Upload area label */
 .upload-hint { font-size: 11px; color: var(--text-ghost); font-family: var(--font-mono); margin-top: 4px; }
-
-/* History stats bar */
 .history-meta { font-size: 11px; font-family: var(--font-mono); color: var(--text-faint); margin-bottom: 14px; }
-
-/* Danger button (delete) */
-[data-testid="stButton"] button.danger { background: var(--red-dim) !important; border-color: var(--red-border) !important; color: var(--red) !important; }
-
-/* Spacer utilities */
-.gap-sm { height: 8px; }
-.gap { height: 16px; }
-.gap-lg { height: 24px; }
-
-/* Recording animation — defined here once, not re-injected every second */
-@keyframes rec-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%       { opacity: 0.35; transform: scale(1.4); }
-}
-
-/* How-it-works card side column */
-.how-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px 22px;
-}
+.gap-sm { height: 8px; } .gap { height: 16px; } .gap-lg { height: 24px; }
+.how-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 22px; }
 .how-card .how-label { font-size: 10px; font-family: var(--font-mono); color: var(--text-faint); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
 .how-step { display: flex; gap: 12px; margin-bottom: 12px; align-items: flex-start; }
-.how-num { width: 20px; height: 20px; border-radius: 50%; background: var(--accent-dim); border: 1px solid var(--border-accent); font-size: 10px; font-family: var(--font-mono); color: var(--accent-light); display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+.how-num { width: 20px; height: 20px; border-radius: 50%; background: var(--accent-dim); border: 1px solid var(--border-accent);
+    font-size: 10px; font-family: var(--font-mono); color: var(--accent-light); display: flex;
+    align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
 .how-text { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+@keyframes rec-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(1.4); } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -562,9 +626,30 @@ for key, default in [
 
 if "recording_executor" not in st.session_state:
     st.session_state.recording_executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="MeetGenieRecordingProcessor",
+        max_workers=1, thread_name_prefix="MeetGenieProcessor"
     )
+
+# ── Session restore on refresh ────────────────────────────────────────────────
+if not st.session_state.get("logged_in"):
+    restored = restore_session()
+    if restored:
+        st.session_state["logged_in"] = True
+        st.session_state["user"] = restored
+        st.session_state["google_token"] = restored["token"]
+        if st.session_state.get("page", "login") == "login":
+            st.session_state["page"] = "dashboard"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def clear_for_new_meeting() -> None:
+    for key in [
+        "result", "filename", "upload_future", "recording_future",
+        "recording_processing_name", "chat_answer", "calendar_events",
+        "error", "recording_error", "suggested_questions",
+    ]:
+        st.session_state[key] = None
 
 
 def _process_recorded_audio(meeting_file):
@@ -577,131 +662,12 @@ def _process_recorded_audio(meeting_file):
             pass
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────────────────────────────────────
-def render_sidebar():
-    with st.sidebar:
-
-        st.markdown(
-            '<div style="padding:4px 0 20px;"><span style="font-size:18px;font-weight:700;color:#fff;letter-spacing:-0.3px;">Meet<span style="color:#4f7cff;">Genie</span></span></div>',
-            unsafe_allow_html=True,
-        )
-
-        # --------------------------------------------------
-        # Logged in user
-        # --------------------------------------------------
-        user = st.session_state.get("user")
-
-        if user:
-            with st.container(border=True):
-                st.markdown(f"### 👤 {user['name']}")
-                st.caption(user["email"])
-
-        page = st.session_state.get("page", "upload")
-
-        nav_items = [
-            ("🎙️", "New Meeting", "upload"),
-            ("📋", "History", "history"),
-        ]
-
-        for icon, label, target in nav_items:
-            active = "active" if page == target else ""
-
-            st.markdown(
-                f'<div class="sb-nav-item {active}">{icon}&nbsp;&nbsp;{label}</div>',
-                unsafe_allow_html=True,
-            )
-
-            if st.button(
-                label,
-                key=f"sb_{target}",
-                width="stretch",
-                help=f"Go to {label}",
-            ):
-                st.session_state["page"] = target
-
-                if target != "results":
-                    st.session_state["result"] = None
-
-                st.rerun()
-
-        if st.session_state.result:
-            active = "active" if page == "results" else ""
-
-            st.markdown(
-                f'<div class="sb-nav-item {active}">✨&nbsp;&nbsp;Last Summary</div>',
-                unsafe_allow_html=True,
-            )
-
-            if st.button(
-                "Last Summary",
-                key="sb_results",
-                width="stretch",
-            ):
-                st.session_state["page"] = "results"
-                st.rerun()
-
-        st.markdown(
-            '<div class="sb-section-label">Quick Stats</div>',
-            unsafe_allow_html=True,
-        )
-
-        all_meetings = get_all_meetings(st.session_state.user["id"])
-
-        st.markdown(
-            f"""
-            <div class="sb-stat-block">
-                <div class="sb-stat-num">{len(all_meetings)}</div>
-                <div class="sb-stat-label">Meetings saved</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if is_recording():
-            elapsed = get_recording_duration()
-            mins, secs = divmod(int(elapsed), 60)
-
-            st.markdown(
-                f"""<div class="sb-stat-block" style="border-color:var(--red-border);background:var(--red-dim);display:flex;align-items:center;justify-content:space-between;">
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <div class="rec-dot"></div>
-                        <span class="sb-stat-num" style="color:var(--red);">{mins:02d}:{secs:02d}</span>
-                    </div>
-                    <span class="sb-stat-label" style="color:#ffaaaa;">Recording active</span>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-        # --------------------------------------------------
-        # Sign out
-        # --------------------------------------------------
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        if user:
-            if st.button(
-                "🚪 Sign Out",
-                key="logout_btn",
-                width="stretch",
-            ):
-                st.session_state.clear()
-                st.rerun()
-
-        st.markdown(
-            '<div class="gap-lg"></div>',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            '<div style="font-size:10px;color:var(--text-ghost);font-family:DM Mono,monospace;padding:0 12px;">MeetGenie · Whisper + Gemini</div>',
-            unsafe_allow_html=True,
-        )
-# ─────────────────────────────────────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
 def nav_bar(current_page):
-    labels = {"upload": "New Meeting", "results": "Summary", "history": "History"}
+    labels = {
+        "dashboard": "Dashboard", "upload": "New Meeting",
+        "results": "Summary", "history": "Meeting History",
+        "calendar": "Calendar", "profile": "Profile", "settings": "Settings",
+    }
     st.markdown(f"""
     <div class="nav-bar">
         <div class="nav-logo">Meet<span>Genie</span></div>
@@ -710,11 +676,41 @@ def nav_bar(current_page):
     """, unsafe_allow_html=True)
 
 
+def _nav_button(icon, label, target, current_page):
+    """Render a sidebar nav item with a visible HTML label and a real Streamlit button."""
+    active = "active" if current_page == target else ""
+    st.markdown(
+        f'<div class="sb-nav-item {active}">{icon}&nbsp;&nbsp;{label}</div>',
+        unsafe_allow_html=True,
+    )
+    with st.container():
+        st.markdown('<div class="sb-btn-wrap">', unsafe_allow_html=True)
+        clicked = st.button(label, key=f"nav_{target}", use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    if clicked:
+        st.session_state["page"] = target
+        st.rerun()
+
+
 def section_card(title, items, icon=""):
     if not items:
         content = '<p class="empty">None recorded</p>'
     else:
-        lis = "".join(f"<li>{item}</li>" for item in items if item)
+        lis = ""
+        for item in items:
+            if not item:
+                continue
+            if isinstance(item, dict):
+                assignee = (item.get("assignee") or item.get("owner") or "").strip()
+                task = item.get("task", "").strip()
+                if assignee and task:
+                    lis += f"<li><strong>{assignee}</strong> — {task}</li>"
+                elif task:
+                    lis += f"<li>{task}</li>"
+                elif assignee:
+                    lis += f"<li>{assignee}</li>"
+            else:
+                lis += f"<li>{item}</li>"
         content = f"<ul>{lis}</ul>" if lis else '<p class="empty">None recorded</p>'
     st.markdown(f"""
     <div class="section-card">
@@ -755,90 +751,305 @@ def sentiment_pill(label):
     cls = {"POSITIVE": "POS", "NEGATIVE": "NEG"}.get(label, "NEU")
     icon = {"POSITIVE": "↑", "NEGATIVE": "↓"}.get(label, "·")
     return f'<span class="sentiment-pill {cls}">{icon} {label}</span>'
-    
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SIDEBAR
+# ─────────────────────────────────────────────────────────────────────────────
+def render_sidebar():
+    with st.sidebar:
+        st.markdown('<div class="sb-logo">Meet<span>Genie</span></div>', unsafe_allow_html=True)
+
+        user = st.session_state.get("user", {})
+        picture = user.get("picture", "")
+        name = user.get("name", "User")
+        email = user.get("email", "")
+
+        if picture:
+            st.markdown(f"""
+            <div class="sb-user-block">
+                <img class="sb-avatar" src="{picture}" />
+                <div>
+                    <div class="sb-user-name">{name}</div>
+                    <div class="sb-user-email">{email}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="sb-user-block">
+                <div style="width:36px;height:36px;border-radius:50%;background:var(--accent-dim);
+                    display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">👤</div>
+                <div>
+                    <div class="sb-user-name">{name}</div>
+                    <div class="sb-user-email">{email}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        page = st.session_state.get("page", "dashboard")
+
+        st.markdown('<div class="sb-section-label">Main</div>', unsafe_allow_html=True)
+        _nav_button("🏠", "Dashboard",       "dashboard", page)
+        _nav_button("🎥", "New Meeting",     "upload",    page)
+        _nav_button("📜", "Meeting History", "history",   page)
+        _nav_button("📅", "Calendar",        "calendar",  page)
+
+        st.markdown('<div class="sb-section-label">Account</div>', unsafe_allow_html=True)
+        _nav_button("👤", "Profile",  "profile",  page)
+        _nav_button("⚙", "Settings", "settings", page)
+
+        if st.session_state.get("result"):
+            st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+            _nav_button("✨", "Last Summary", "results", page)
+
+        # Recording indicator
+        if is_recording():
+            elapsed = get_recording_duration()
+            mins, secs = divmod(int(elapsed), 60)
+            st.markdown(f"""
+            <div class="sb-stat-block" style="border-color:var(--red-border);background:var(--red-dim);margin-top:12px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <div class="rec-dot"></div>
+                    <span class="sb-stat-num" style="color:var(--red);">{mins:02d}:{secs:02d}</span>
+                </div>
+                <div class="sb-stat-label" style="color:#ffaaaa;">Recording active</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown('<div style="flex:1"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        if st.button("🚪  Sign Out", key="logout_btn", use_container_width=True):
+            sid = st.query_params.get("sid")
+            if sid:
+                delete_session(sid)
+            clear_session_param()
+            st.session_state.clear()
+            st.rerun()
+
+        st.markdown(
+            '<div style="font-size:10px;color:var(--text-ghost);font-family:DM Mono,monospace;padding:12px 0 4px;">MeetGenie · Whisper + Gemini</div>',
+            unsafe_allow_html=True,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE 0 — LOGIN
 # ─────────────────────────────────────────────────────────────────────────────
-
 def login_page():
-
-    st.markdown(
-        """
+    st.markdown("""
 <style>
+.login-container { display:flex; flex-direction:column; justify-content:center; align-items:center;
+    text-align:center; margin-top:100px; margin-bottom:40px; }
+.login-title { font-size:56px; font-weight:700; color:white; margin-bottom:20px; }
+.login-subtitle { color:#9ca3af; font-size:22px; line-height:1.7; max-width:750px; }
+</style>""", unsafe_allow_html=True)
 
-.login-container{
-    display:flex;
-    flex-direction:column;
-    justify-content:center;
-    align-items:center;
-    text-align:center;
-    margin-top:100px;
-    margin-bottom:40px;
-}
-
-.login-title{
-    font-size:56px;
-    font-weight:700;
-    color:white;
-    margin-bottom:20px;
-}
-
-.login-subtitle{
-    color:#9ca3af;
-    font-size:22px;
-    line-height:1.7;
-    max-width:750px;
-}
-
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
+    st.markdown("""
 <div class="login-container">
+<div class="login-title">Meet<span style="color:#4F7FFF;">Genie</span></div>
+<div class="login-subtitle">AI-powered meeting summaries, action items and automatic
+Google Calendar integration.<br>Sign in to continue.</div>
+</div>""", unsafe_allow_html=True)
 
-<div class="login-title">
-Meet<span style="color:#4F7FFF;">Genie</span>
-</div>
-
-<div class="login-subtitle">
-AI-powered meeting summaries, action items and automatic
-Google Calendar integration.<br>
-Sign in to continue.
-</div>
-
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    # Center Google Sign-In button
     left, center, right = st.columns([3, 2, 3])
-
     with center:
         user = google_login()
 
     if user:
-
-        save_user(
-            email=user["email"],
-            name=user["name"],
-            credentials=user["credentials"],
-        )
-
+        save_user(email=user["email"], name=user["name"], credentials=user["credentials"])
         db_user = get_user(user["email"])
         user["id"] = db_user[0]
+
+        session_token = create_session_token()
+        create_session(session_token, user["email"])
+
+        # Set query param BEFORE touching session_state so Streamlit
+        # writes it to the URL in this render pass. Calling st.rerun()
+        # immediately after set_session_param() raises RerunException
+        # which can unwind before the param is committed, causing the
+        # ?sid= token to vanish on the very next load.
+        # We set it here, then set session_state and let the natural
+        # next render do the routing instead of forcing a rerun.
+        set_session_param(session_token)
 
         st.session_state["logged_in"] = True
         st.session_state["user"] = user
         st.session_state["google_token"] = user["token"]
-        st.session_state["page"] = "upload"
+        st.session_state["page"] = "dashboard"
+        # Do NOT call st.rerun() here — let the query param write complete.
 
-        st.rerun()
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  PAGE 1 — UPLOAD
+#  PAGE 1 — DASHBOARD
+# ─────────────────────────────────────────────────────────────────────────────
+def dashboard_page():
+    nav_bar("dashboard")
+
+    user = st.session_state.get("user", {})
+    user_id = user.get("id")
+    name = user.get("name", "").split()[0] if user.get("name") else "there"
+
+    st.markdown(f'<div class="page-title">Good day, {name} 👋</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-subtitle">Here\'s your meeting intelligence overview.</div>', unsafe_allow_html=True)
+
+    # ── Stats row ─────────────────────────────────────────────────────────
+    stats = get_dashboard_stats(user_id)
+    all_meetings = get_all_meetings(user_id)
+
+    total_actions = 0
+    for m in all_meetings:
+        try:
+            parsed = json.loads(m[4] or "{}")
+            total_actions += len(parsed.get("action_items", []))
+        except Exception:
+            pass
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.markdown(f"""
+        <div class="dash-stat-card">
+            <div class="dash-stat-num">{stats['meeting_count']}</div>
+            <div class="dash-stat-label">Meetings Processed</div>
+            <div class="dash-stat-sub">All time</div>
+        </div>""", unsafe_allow_html=True)
+    with s2:
+        st.markdown(f"""
+        <div class="dash-stat-card">
+            <div class="dash-stat-num">{stats['hours_processed']}</div>
+            <div class="dash-stat-label">Hours Processed</div>
+            <div class="dash-stat-sub">Total audio duration</div>
+        </div>""", unsafe_allow_html=True)
+    with s3:
+        st.markdown(f"""
+        <div class="dash-stat-card">
+            <div class="dash-stat-num">{total_actions}</div>
+            <div class="dash-stat-label">Action Items</div>
+            <div class="dash-stat-sub">Across all meetings</div>
+        </div>""", unsafe_allow_html=True)
+
+    # ── Main content: Recent Meetings + Upcoming Calendar ─────────────────
+    left_col, right_col = st.columns([3, 2], gap="large")
+
+    with left_col:
+        st.markdown('<div class="dash-section-title">Recent Meetings</div>', unsafe_allow_html=True)
+        recent = get_recent_meetings(user_id, limit=5)
+
+        if not recent:
+            st.markdown('<div style="color:var(--text-ghost);font-size:13px;padding:20px 0;">No meetings yet. Process your first meeting to see it here.</div>', unsafe_allow_html=True)
+        else:
+            for m in recent:
+                mid, fname, created_at, overview, _ = m
+                st.markdown(f"""
+                <div class="dash-meeting-row">
+                    <div style="flex:1;min-width:0;">
+                        <div class="dash-meeting-name">{fname or "Untitled Meeting"}</div>
+                        <div class="dash-meeting-date">{created_at}</div>
+                        <div class="dash-meeting-preview">{overview or "No overview."}</div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+        if recent:
+            st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+            if st.button("View all meetings →", key="dash_view_history"):
+                st.session_state["page"] = "history"
+                st.rerun()
+
+    with right_col:
+        st.markdown('<div class="dash-section-title">Upcoming Calendar Events</div>', unsafe_allow_html=True)
+        token = st.session_state.get("google_token")
+        if token:
+            try:
+                service = get_calendar_service(token)
+                now = datetime.utcnow().isoformat() + "Z"
+                upcoming_raw = (
+                    service.events()
+                    .list(
+                        calendarId="primary",
+                        timeMin=now,
+                        maxResults=5,
+                        singleEvents=True,
+                        orderBy="startTime",
+                    )
+                    .execute()
+                )
+                upcoming = upcoming_raw.get("items", [])
+                if upcoming:
+                    for ev in upcoming:
+                        title = ev.get("summary", "Untitled")
+                        start = ev.get("start", {})
+                        start_str = start.get("dateTime") or start.get("date") or ""
+                        try:
+                            dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                            display_time = dt.strftime("%b %d · %I:%M %p")
+                        except Exception:
+                            display_time = start_str
+                        st.markdown(f"""
+                        <div class="dash-cal-event">
+                            <div class="dash-cal-title">{title}</div>
+                            <div class="dash-cal-time">{display_time}</div>
+                        </div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="color:var(--text-ghost);font-size:13px;padding:20px 0;">No upcoming events.</div>', unsafe_allow_html=True)
+            except Exception:
+                st.markdown('<div style="color:var(--text-ghost);font-size:13px;">Could not load calendar events.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:var(--text-ghost);font-size:13px;">Sign in with Google to see calendar events.</div>', unsafe_allow_html=True)
+
+    # ── Quick Actions ─────────────────────────────────────────────────────
+    st.markdown('<div class="dash-section-title">Quick Actions</div>', unsafe_allow_html=True)
+    qa1, qa2, qa3, qa4 = st.columns(4)
+
+    with qa1:
+        st.markdown("""
+        <div class="dash-quick-action">
+            <div class="dash-qa-icon">🎥</div>
+            <div class="dash-qa-label">New Meeting</div>
+            <div class="dash-qa-sub">Upload or record</div>
+        </div>""", unsafe_allow_html=True)
+        if st.button("Start", key="qa_new", use_container_width=True):
+            clear_for_new_meeting()
+            st.session_state["page"] = "upload"
+            st.rerun()
+
+    with qa2:
+        st.markdown("""
+        <div class="dash-quick-action">
+            <div class="dash-qa-icon">📜</div>
+            <div class="dash-qa-label">Meeting History</div>
+            <div class="dash-qa-sub">Browse past summaries</div>
+        </div>""", unsafe_allow_html=True)
+        if st.button("Browse", key="qa_history", use_container_width=True):
+            st.session_state["page"] = "history"
+            st.rerun()
+
+    with qa3:
+        st.markdown("""
+        <div class="dash-quick-action">
+            <div class="dash-qa-icon">📅</div>
+            <div class="dash-qa-label">Calendar</div>
+            <div class="dash-qa-sub">View & manage events</div>
+        </div>""", unsafe_allow_html=True)
+        if st.button("Open", key="qa_calendar", use_container_width=True):
+            st.session_state["page"] = "calendar"
+            st.rerun()
+
+    with qa4:
+        st.markdown("""
+        <div class="dash-quick-action">
+            <div class="dash-qa-icon">✨</div>
+            <div class="dash-qa-label">Last Summary</div>
+            <div class="dash-qa-sub">Resume where you left off</div>
+        </div>""", unsafe_allow_html=True)
+        has_result = bool(st.session_state.get("result"))
+        if st.button("View", key="qa_last", use_container_width=True, disabled=not has_result):
+            st.session_state["page"] = "results"
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PAGE 2 — NEW MEETING (upload)
 # ─────────────────────────────────────────────────────────────────────────────
 def upload_page():
     nav_bar("upload")
@@ -855,14 +1066,12 @@ def upload_page():
             help="Give this meeting a name so you can find it in History later.",
         )
 
-        # ── Upload section ─────────────────────────────────────────────────
         st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
 
         uploaded_file = st.file_uploader(
             "Drop your recording or transcript here",
             type=["mp3", "wav", "mp4", "txt"],
             help="MP3, WAV, MP4 for audio/video — TXT for raw transcripts",
-            label_visibility="visible",
         )
         st.markdown('<div class="upload-hint">MP3 · WAV · MP4 · TXT &nbsp;·&nbsp; Max 500 MB</div>', unsafe_allow_html=True)
 
@@ -871,7 +1080,7 @@ def upload_page():
             if meeting_name.strip():
                 st.session_state.filename = meeting_name.strip()
 
-        # ── Upload processing in progress ──────────────────────────────────
+        # ── Upload processing polling ──────────────────────────────────────
         upload_future = st.session_state.get("upload_future")
         if upload_future is not None:
             if upload_future.done():
@@ -890,7 +1099,7 @@ def upload_page():
 
         st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
 
-        if st.button("Generate Summary →", type="primary", width='stretch'):
+        if st.button("Generate Summary →", type="primary", width="stretch"):
             if not uploaded_file:
                 st.warning("Please upload a file first.")
             elif not meeting_name.strip():
@@ -917,9 +1126,7 @@ def upload_page():
                                 pass
 
                     st.session_state.upload_future = (
-                        st.session_state.recording_executor.submit(
-                            _process_upload, temp_path
-                        )
+                        st.session_state.recording_executor.submit(_process_upload, temp_path)
                     )
                 except Exception as exc:
                     st.session_state.error = str(exc)
@@ -932,13 +1139,8 @@ def upload_page():
         # ── Recording section ──────────────────────────────────────────────
         currently_recording = is_recording()
 
-        st.markdown("""
-        <div class="rec-container">
-            <div class="rec-label">🎙 Live Recording</div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)  # closed below after buttons
-
-        # Re-open for Streamlit widgets (can't mix HTML and widgets inside one markdown block)
+        st.markdown('<div class="rec-container"><div class="rec-label">🎙 Live Recording</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('<div class="rec-container" style="margin-top:-12px;border-top:none;border-radius:0 0 10px 10px;padding-top:0;">', unsafe_allow_html=True)
 
         if st.session_state.recording_error:
@@ -950,10 +1152,7 @@ def upload_page():
             if recording_future.done():
                 try:
                     st.session_state.result = recording_future.result()
-                    st.session_state.filename = (
-                        st.session_state.recording_processing_name
-                        or meeting_name.strip()
-                    )
+                    st.session_state.filename = st.session_state.recording_processing_name or meeting_name.strip()
                     st.session_state.chat_answer = None
                     st.session_state.pop("calendar_events", None)
                     st.session_state.pop("suggested_questions", None)
@@ -971,7 +1170,7 @@ def upload_page():
                 st.rerun()
 
         if not currently_recording:
-            if st.button("▶  Start Recording", width='stretch'):
+            if st.button("▶  Start Recording", width="stretch"):
                 if not meeting_name.strip():
                     st.warning("Enter a meeting name before recording.")
                 else:
@@ -982,24 +1181,20 @@ def upload_page():
                     except Exception as exc:
                         st.error(f"Could not start recording: {exc}")
         else:
-            if st.button("⏹  Stop & Summarise", type="primary", width='stretch'):
+            if st.button("⏹  Stop & Summarise", type="primary", width="stretch"):
                 try:
                     with st.spinner("Saving audio…"):
                         meeting_file = stop_recording()
                     st.session_state.recording = False
                     st.session_state.recording_processing_name = meeting_name.strip()
                     st.session_state.recording_future = (
-                        st.session_state.recording_executor.submit(
-                            _process_recorded_audio,
-                            meeting_file,
-                        )
+                        st.session_state.recording_executor.submit(_process_recorded_audio, meeting_file)
                     )
                 except Exception as exc:
                     st.session_state.recording = False
                     st.session_state.recording_error = str(exc)
                 st.rerun()
 
-            # Live status indicator — @keyframes defined in main CSS, not here
             elapsed = get_recording_duration()
             mins, secs = divmod(int(elapsed), 60)
             st.markdown(f"""
@@ -1007,8 +1202,7 @@ def upload_page():
                 <div class="rec-dot"></div>
                 <span class="rec-status-text">Recording in progress</span>
                 <span class="rec-timer">{mins:02d}:{secs:02d}</span>
-            </div>
-            """, unsafe_allow_html=True)
+            </div>""", unsafe_allow_html=True)
             time.sleep(1)
             st.rerun()
 
@@ -1019,49 +1213,44 @@ def upload_page():
         st.markdown("""
         <div class="how-card">
             <div class="how-label">How it works</div>
-            <div class="how-step"><div class="how-num">1</div><div class="how-text">Sign in with your Google account to enable Gmail and Google Calendar integration</div></div>
-            <div class="how-step"><div class="how-num">2</div><div class="how-text">Upload a recording (MP3/WAV/MP4) or a text transcript</div></div>
-            <div class="how-step"><div class="how-num">3</div><div class="how-text">Whisper transcribes your audio with speaker detection</div></div>
-            <div class="how-step"><div class="how-num">4</div><div class="how-text">Gemini AI extracts insights, actions, risks, decisions, and meeting events</div></div>
-            <div class="how-step"><div class="how-num">5</div><div class="how-text">Add detected meeting events directly to your Google Calendar</div></div>
-            <div class="how-step"><div class="how-num">6</div><div class="how-text">Download as PDF, email to your team, or save to History</div></div>
-        </div>
-        """, unsafe_allow_html=True)
+            <div class="how-step"><div class="how-num">1</div><div class="how-text">Sign in with Google for Calendar integration</div></div>
+            <div class="how-step"><div class="how-num">2</div><div class="how-text">Upload a recording (MP3/WAV/MP4) or transcript</div></div>
+            <div class="how-step"><div class="how-num">3</div><div class="how-text">Whisper transcribes with speaker detection</div></div>
+            <div class="how-step"><div class="how-num">4</div><div class="how-text">Gemini extracts insights, actions, risks and decisions</div></div>
+            <div class="how-step"><div class="how-num">5</div><div class="how-text">Add events to Google Calendar in one click</div></div>
+            <div class="how-step"><div class="how-num">6</div><div class="how-text">Download PDF, email your team, or save to History</div></div>
+        </div>""", unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PAGE 2 — RESULTS
+#  PAGE 3 — RESULTS (summary)
 # ─────────────────────────────────────────────────────────────────────────────
 def results_page():
     nav_bar("results")
 
     result = st.session_state.result
 
-    # Automatically detect calendar events once
     if "calendar_events" not in st.session_state:
-        transcript = result.get("transcript", "")
-
+        transcript = result.get("transcript", "") if result else ""
         if transcript.strip():
             try:
                 st.session_state.calendar_events = extract_calendar_events(transcript)
-            except Exception as e:
+            except Exception:
                 st.session_state.calendar_events = []
-                st.warning(f"Calendar extraction failed: {e}")
+
     if not result:
         st.error("No summary found. Please process a meeting first.")
         if st.button("← New Meeting", key="results_back"):
-            st.session_state.page = "upload"
+            st.session_state["page"] = "upload"
             st.rerun()
         return
 
-    # ── Header ────────────────────────────────────────────────────────────
     name = st.session_state.filename or "Meeting Summary"
     st.markdown(f'<div class="page-title">{name}</div>', unsafe_allow_html=True)
 
     meta_pills(result.get("language"), result.get("duration", 0))
     stat_badges(result)
 
-    # ── Overview ──────────────────────────────────────────────────────────
     overview = result.get("overview", "").strip()
     st.markdown(f"""
     <div class="overview-card">
@@ -1071,15 +1260,20 @@ def results_page():
     """, unsafe_allow_html=True)
 
     # ── Action bar ────────────────────────────────────────────────────────
-    act_col1, act_col2, act_col3 = st.columns([1, 1, 2])
+    act_col1, act_col2, act_col3, act_col4 = st.columns([1, 1, 1, 2])
     with act_col1:
-        if st.button("💾  Save to History", width='stretch', key="save_history_btn"):
+        if st.button("＋  New Meeting", width="stretch", key="new_meeting_btn"):
+            clear_for_new_meeting()
+            st.session_state["page"] = "upload"
+            st.rerun()
+    with act_col2:
+        if st.button("💾  Save to History", width="stretch", key="save_history_btn"):
             if overview:
                 save_meeting(st.session_state.user["id"], st.session_state.filename, result)
                 st.success("Saved.")
             else:
                 st.error("Cannot save — no overview generated.")
-    with act_col2:
+    with act_col3:
         pdf_bytes = generate_summary_pdf(result, name)
         st.download_button(
             "⬇  Download PDF",
@@ -1087,14 +1281,14 @@ def results_page():
             file_name=f"{name.replace(' ', '_')}_summary.pdf",
             mime="application/pdf",
             key="download_pdf_results",
-            width='stretch',
+            width="stretch",
         )
-    with act_col3:
+    with act_col4:
         email_inner_col, email_btn_col = st.columns([3, 1])
         with email_inner_col:
             email = st.text_input("Recipient email", placeholder="Email summary to…", key="results_email", label_visibility="collapsed")
         with email_btn_col:
-            if st.button("Send →", width='stretch', key="send_email_btn"):
+            if st.button("Send →", width="stretch", key="send_email_btn"):
                 if not email:
                     st.warning("Enter a recipient email.")
                 else:
@@ -1106,7 +1300,6 @@ def results_page():
 
     # ── Summary sections ──────────────────────────────────────────────────
     st.markdown('<div class="section-header">Summary</div>', unsafe_allow_html=True)
-
     c1, c2, c3 = st.columns(3)
     with c1:
         section_card("Key Discussion Points", result.get("discussion_points", []), "🔑")
@@ -1117,17 +1310,14 @@ def results_page():
     with c3:
         section_card("Next Steps",            result.get("next_steps", []),         "➡️")
         section_card("Risks & Blockers",      result.get("risks", []),              "⚠️")
-    
     c4, c5 = st.columns(2)
     with c4:
         section_card("Open Questions", result.get("questions", []),  "❓")
     with c5:
         section_card("Follow Ups",     result.get("follow_ups", []), "🔄")
 
-    # ── Speaker analytics & sentiment ─────────────────────────────────────
+    # ── Speaker analytics ─────────────────────────────────────────────────
     segments = result.get("segments", [])
-
-    # Compute speaker summary once (works for both diarized and plain transcripts)
     speaker_sentiments: dict = defaultdict(list)
     for seg in segments:
         speaker_sentiments[seg.get("speaker", "Unknown")].append(seg.get("sentiment", "NEUTRAL"))
@@ -1135,34 +1325,23 @@ def results_page():
 
     if segments:
         st.markdown('<div class="section-header">Analytics</div>', unsafe_allow_html=True)
-
-        stats = result.get("talk_time") or calculate_talk_time(segments)
-        participation = result.get("participation") or calculate_participation(stats)
+        stats_tt = result.get("talk_time") or calculate_talk_time(segments)
+        participation = result.get("participation") or calculate_participation(stats_tt)
 
         ana_col, chart_col = st.columns([1, 1])
-
         with ana_col:
             rows = ""
             for spk, pct in participation.items():
-                talk_s = round(stats[spk], 1)
-                dom    = speaker_summary.get(spk, "NEUTRAL")
-                pill   = sentiment_pill(dom)
+                talk_s = round(stats_tt[spk], 1)
+                dom = speaker_summary.get(spk, "NEUTRAL")
+                pill = sentiment_pill(dom)
                 rows += (
                     f'<div class="speaker-row">'
-                    f'<div>'
-                    f'<div class="speaker-name">{spk}</div>'
-                    f'<div class="speaker-meta">{pct}% &nbsp;&middot;&nbsp; {talk_s}s</div>'
-                    f'</div>'
-                    f'{pill}'
-                    f'</div>'
+                    f'<div><div class="speaker-name">{spk}</div>'
+                    f'<div class="speaker-meta">{pct}% &nbsp;&middot;&nbsp; {talk_s}s</div></div>'
+                    f'{pill}</div>'
                 )
-            html_block = (
-                f'<div class="analytics-card">'
-                f'<div class="ac-header">Speaker Breakdown</div>'
-                f'{rows}'
-                f'</div>'
-            )
-            st.html(html_block)
+            st.html(f'<div class="analytics-card"><div class="ac-header">Speaker Breakdown</div>{rows}</div>')
 
         with chart_col:
             if participation:
@@ -1173,15 +1352,13 @@ def results_page():
                     color_discrete_sequence=["#4f7cff", "#ff4b4b", "#22c55e", "#f59e0b", "#a855f7"],
                 )
                 fig.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(family="DM Sans, sans-serif", color="#b8bdd0", size=12),
                     margin=dict(l=0, r=0, t=20, b=0),
                     legend=dict(font=dict(color="#b8bdd0"), bgcolor="rgba(0,0,0,0)"),
-                    showlegend=True,
                 )
                 fig.update_traces(textfont_color="#eceef5", textfont_size=12)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width="stretch")
 
     # ── Transcript ────────────────────────────────────────────────────────
     with st.expander("📝  Full Transcript", expanded=False):
@@ -1189,32 +1366,28 @@ def results_page():
             html_segs = ""
             for seg in segments:
                 s, e = int(seg["start"]), int(seg["end"])
-                ts   = f"{s//60:02d}:{s%60:02d} – {e//60:02d}:{e%60:02d}"
-                spk  = seg.get("speaker", "Unknown")
-                txt  = seg.get("text", "").strip()
+                ts  = f"{s//60:02d}:{s%60:02d} – {e//60:02d}:{e%60:02d}"
+                spk = seg.get("speaker", "Unknown")
+                txt = seg.get("text", "").strip()
                 sent = seg.get("sentiment", "NEUTRAL")
                 scr  = seg.get("sentiment_score", 0)
                 cls  = {"POSITIVE": "POS", "NEGATIVE": "NEG"}.get(sent, "NEU")
                 html_segs += f"""
                 <div class="seg-block">
-                    <div class="seg-header">
-                        <span class="seg-speaker">{spk}</span>
-                        <span class="seg-time">{ts}</span>
-                    </div>
+                    <div class="seg-header"><span class="seg-speaker">{spk}</span><span class="seg-time">{ts}</span></div>
                     <p class="seg-text">{txt}</p>
                     <div class="seg-sentiment {cls}">{sent} {scr:.2f}</div>
                 </div>"""
             st.markdown(html_segs, unsafe_allow_html=True)
         else:
             st.text_area("", result.get("transcript", ""), height=300, label_visibility="collapsed")
-    
+
+    # ── Suggested questions + Chat ─────────────────────────────────────────
     if "suggested_questions" not in st.session_state:
-        st.session_state.suggested_questions = generate_questions(
-            result.get("transcript", "")
-        )
-    # ── Chat with meeting ─────────────────────────────────────────────────
+        st.session_state.suggested_questions = generate_questions(result.get("transcript", ""))
+
     st.markdown('<div class="section-header">Chat With This Meeting</div>', unsafe_allow_html=True)
-    
+
     question = st.text_input(
         "Ask a question",
         placeholder="💬 Ask anything about this meeting",
@@ -1223,264 +1396,227 @@ def results_page():
     )
 
     st.caption("Suggested Questions")
+    sq = st.session_state.suggested_questions or []
+    if sq:
+        cols = st.columns(min(3, len(sq)))
+        for i, q in enumerate(sq):
+            with cols[i % len(cols)]:
+                if st.button(q, key=f"suggested_q_{i}", use_container_width=True):
+                    question = q
 
-    cols = st.columns(min(3, len(st.session_state.suggested_questions)))
-
-    for i, q in enumerate(st.session_state.suggested_questions):
-        with cols[i % len(cols)]:
-            if st.button(q, key=f"suggested_q_{i}", use_container_width=True):
-                question = q
     if question:
-        meeting_context = f"""
-    Speaker Count:
-    {result.get('speaker_count', 'Unknown')}
-
-    Top Speaker:
-    {result.get('top_speaker', 'Unknown')}
-
-    Participation:
-    {result.get('participation', '')}
-
-    Talk Time:
-    {result.get('talk_time', '')}
-
-    Speaker Turns:
-    {result.get('speaker_turns', '')}
-
-    Speaker Sentiment:
-    {result.get('speaker_sentiment', '')}
-
-    Transcript:
-    {result.get('transcript', '')}
-    """
-
+        meeting_context = f"""Speaker Count: {result.get('speaker_count','Unknown')}
+Top Speaker: {result.get('top_speaker','Unknown')}
+Participation: {result.get('participation','')}
+Talk Time: {result.get('talk_time','')}
+Speaker Sentiment: {result.get('speaker_sentiment','')}
+Transcript: {result.get('transcript','')}"""
         with st.spinner("Thinking…"):
-            answer = ask_meeting_question(
-                meeting_context,
-                question
-            )
+            answer = ask_meeting_question(meeting_context, question)
             st.session_state.chat_answer = answer
 
     if st.session_state.chat_answer:
         st.markdown(f'<div class="chat-answer">{st.session_state.chat_answer}</div>', unsafe_allow_html=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)  # close chat-card
-
-    # ─────────────────────────────────────────────────────────────
-    # Calendar Events
-    # ─────────────────────────────────────────────────────────────
-
+    # ── Calendar events detected in this meeting ──────────────────────────
     events = st.session_state.get("calendar_events", [])
-
     if events:
+        st.markdown('<div class="section-header">📅 Detected Calendar Events</div>', unsafe_allow_html=True)
+        token = st.session_state.get("google_token")
 
-        st.markdown(
-            '<div class="section-header">📅 Calendar Events</div>',
-            unsafe_allow_html=True,
-        )
+        reminder_options = {
+            "No reminder": 0, "5 minutes before": 5, "10 minutes before": 10,
+            "15 minutes before": 15, "30 minutes before": 30, "45 minutes before": 45,
+            "1 hour before": 60, "2 hours before": 120, "1 day before": 1440,
+        }
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Select All", key="res_sel_all"):
+                for i in range(len(events)):
+                    st.session_state[f"res_event_enable_{i}"] = True
+                st.rerun()
+        with col2:
+            if st.button("❌ Deselect All", key="res_desel_all"):
+                for i in range(len(events)):
+                    st.session_state[f"res_event_enable_{i}"] = False
+                st.rerun()
 
         edited_events = []
-
         for i, event in enumerate(events):
-
             with st.container(border=True):
-
-                st.markdown(f"## 📅 Event {i+1}")
-
-                enabled = st.checkbox(
-                    "Add this event",
-                    value=True,
-                    key=f"event_enable_{i}",
-                )
-
-                title = st.text_input(
-                    "Title",
-                    value=event["title"],
-                    key=f"title_{i}",
-                )
-
+                st.markdown(f"**📅 {event['title']}**")
+                enabled = st.checkbox("Add this event", value=True, key=f"res_event_enable_{i}")
+                title = st.text_input("Title", value=event["title"], key=f"res_title_{i}")
                 col1, col2 = st.columns(2)
-
                 with col1:
-
-                    date = st.date_input(
-                        "Date",
-                        value=datetime.strptime(
-                            event["date"],
-                            "%Y-%m-%d"
-                        ).date(),
-                        key=f"date_{i}",
-                    )
-
+                    from datetime import date as _date
+                    date = st.date_input("Date", value=datetime.strptime(event["date"], "%Y-%m-%d").date(), key=f"res_date_{i}")
                 with col2:
-
-                    time = st.time_input(
-                        "Time",
-                        value=datetime.strptime(
-                            event["time"],
-                            "%H:%M"
-                        ).time(),
-                        key=f"time_{i}",
-                    )
-
+                    t = st.time_input("Time", value=datetime.strptime(event["time"], "%H:%M").time(), key=f"res_time_{i}")
                 col3, col4 = st.columns(2)
-
                 with col3:
-
-                    duration = st.number_input(
-                        "Duration (minutes)",
-                        min_value=15,
-                        max_value=480,
-                        value=event.get(
-                            "duration_minutes",
-                            60,
-                        ),
-                        step=15,
-                        key=f"duration_{i}",
-                    )
-
+                    duration = st.number_input("Duration (minutes)", min_value=15, max_value=480,
+                                               value=event.get("duration_minutes", 60), step=15, key=f"res_duration_{i}")
                 with col4:
-
-                    reminder = st.selectbox(
-                        "Reminder",
-                        [5,10,15,30,60,120],
-                        index=[5,10,15,30,60,120].index(
-                            event.get(
-                                "reminder_minutes",
-                                30,
-                            )
-                        ),
-                        key=f"reminder_{i}",
+                    reminder_label = st.selectbox(
+                        "Reminder", list(reminder_options.keys()),
+                        index=list(reminder_options.values()).index(event.get("reminder_minutes", 30))
+                        if event.get("reminder_minutes", 30) in reminder_options.values() else 4,
+                        key=f"res_reminder_{i}",
                     )
-
-                description = st.text_area(
-                    "Description",
-                    value=event.get(
-                        "description",
-                        "",
-                    ),
-                    key=f"description_{i}",
-                )
-
+                    reminder = reminder_options[reminder_label]
+                description = st.text_area("Description", value=event.get("description", ""), key=f"res_description_{i}")
                 if enabled:
-
                     edited_events.append({
-
-                        "title": title,
-
-                        "date": date.strftime("%Y-%m-%d"),
-
-                        "time": time.strftime("%H:%M"),
-
-                        "duration_minutes": duration,
-
-                        "description": description,
-
-                        "reminder_minutes": reminder,
-
+                        "title": title, "date": date.strftime("%Y-%m-%d"),
+                        "time": t.strftime("%H:%M"), "duration_minutes": duration,
+                        "description": description, "reminder_minutes": reminder,
                     })
 
-        st.write("")
-
-        if st.button(
-            "📅 Add Selected Events to Google Calendar",
-            type="primary",
-            use_container_width=True,
-        ):
-
+        if st.button("📅 Add Selected Events to Google Calendar", type="primary",
+                     use_container_width=True, key="res_add_cal"):
             if not edited_events:
-
                 st.warning("Please select at least one event.")
-
+            elif not token:
+                st.error("Please sign in with Google.")
             else:
-
-                token = st.session_state.get("google_token")
-
-                if token is None:
-
-                    st.error("Please login with Google.")
-
-                else:
-
-                    try:
-
-                        created = create_calendar_events(
-                            edited_events,
-                            token,
-                        )
-
-                        st.success(
-                            f"✅ Added {len(created)} event(s) to Google Calendar!"
-                        )
-
-                    except Exception as e:
-
-                        st.error(str(e))
-
-    else:
-
-        st.info("No calendar events detected.")
+                try:
+                    created = create_calendar_events(edited_events, token)
+                    st.success(f"🎉 Added {len(created)} event(s) to your Google Calendar!")
+                    st.balloons()
+                except Exception as e:
+                    st.error(str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PAGE 3 — HISTORY
+#  PAGE 4 — MEETING HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
 def history_page():
     nav_bar("history")
 
     st.markdown('<div class="page-title">Meeting History</div>', unsafe_allow_html=True)
 
-    search_query = st.text_input(
-        "Search meetings",
-        placeholder="🔍  Search by name, keyword, or content…",
-        key="history_search",
-        label_visibility="collapsed",
-    )
-    st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
-    meetings     = search_meetings(st.session_state.user["id"], search_query) if search_query.strip() else get_all_meetings(st.session_state.user["id"])
-    total        = len(get_all_meetings(st.session_state.user["id"])) if search_query.strip() else len(meetings)
-    count_label  = (
-        f"{len(meetings)} result{'s' if len(meetings) != 1 else ''} for \"{search_query}\""
-        if search_query.strip()
-        else f"{total} saved meeting{'s' if total != 1 else ''}"
-    )
-    st.markdown(f'<div class="history-meta">{count_label}</div>', unsafe_allow_html=True)
+    uid = st.session_state.user["id"]
 
+    # ── Search ────────────────────────────────────────────────────────────
+    search_col, count_col = st.columns([4, 1])
+    with search_col:
+        search_query = st.text_input(
+            "Search meetings",
+            placeholder="🔍  Search by name, keyword, or content…",
+            key="history_search",
+            label_visibility="collapsed",
+        )
+
+    meetings = search_meetings(uid, search_query) if search_query.strip() else get_all_meetings(uid)
+    total    = len(get_all_meetings(uid)) if search_query.strip() else len(meetings)
+
+    with count_col:
+        st.markdown(
+            f'<div style="padding:10px 0;text-align:right;font-size:12px;font-family:var(--font-mono);color:var(--text-faint);">'
+            f'{len(meetings)} / {total}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+
+    # ── Empty state ───────────────────────────────────────────────────────
     if not meetings:
         if search_query:
-            st.info(f'No meetings match "{search_query}".')
+            st.markdown(f"""
+            <div class="history-empty">
+                <div class="history-empty-icon">🔍</div>
+                <div class="history-empty-title">No results for "{search_query}"</div>
+                <div class="history-empty-sub">Try a different keyword, or clear the search to see all meetings.</div>
+            </div>""", unsafe_allow_html=True)
         else:
-            st.info("No meetings saved yet. Process a meeting and click **Save to History**.")
+            st.markdown("""
+            <div class="history-empty">
+                <div class="history-empty-icon">🎙️</div>
+                <div class="history-empty-title">No meetings saved yet</div>
+                <div class="history-empty-sub">Process your first meeting and click <strong>Save to History</strong> to see it here.</div>
+            </div>""", unsafe_allow_html=True)
+            if st.button("＋  Process a Meeting", type="primary", key="history_empty_cta"):
+                st.session_state["page"] = "upload"
+                st.rerun()
         return
 
+    # ── Meeting cards ─────────────────────────────────────────────────────
     for meeting in meetings:
         meeting_id, filename, created_at, overview, summary_json = meeting
 
+        # Parse summary for chip counts
+        try:
+            parsed = json.loads(summary_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+
+        action_count   = len(parsed.get("action_items", []))
+        decision_count = len(parsed.get("decisions", []))
+        duration_s     = parsed.get("duration", 0)
+        lang           = (parsed.get("language") or "").upper()
+        duration_label = f"{round(duration_s / 60, 1)} min" if duration_s else ""
+
+        # Format date
+        try:
+            dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            date_label = dt.strftime("%b %d, %Y · %I:%M %p")
+        except Exception:
+            date_label = str(created_at)[:16] if created_at else ""
+
+        # Build chips HTML
+        chips = ""
+        if action_count:
+            chips += f'<span class="hcard-chip accent">✅ {action_count} action{"s" if action_count != 1 else ""}</span>'
+        if decision_count:
+            chips += f'<span class="hcard-chip">📌 {decision_count} decision{"s" if decision_count != 1 else ""}</span>'
+        if duration_label:
+            chips += f'<span class="hcard-chip">⏱ {duration_label}</span>'
+        if lang:
+            chips += f'<span class="hcard-chip">🌐 {lang}</span>'
+
         st.markdown(f"""
-        <div class="meeting-card">
-            <div class="meeting-card-title">{filename or "Untitled Meeting"}</div>
-            <div class="meeting-card-meta">{created_at}</div>
-            <div class="meeting-card-overview">{overview or "No overview available."}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        <div class="hcard">
+            <div class="hcard-header">
+                <div class="hcard-top">
+                    <div class="hcard-title">{filename or "Untitled Meeting"}</div>
+                    <div class="hcard-date">{date_label}</div>
+                </div>
+                <div class="hcard-overview">{overview or "No overview available."}</div>
+                {'<div class="hcard-chips">' + chips + '</div>' if chips else ""}
+            </div>
+        </div>""", unsafe_allow_html=True)
 
-        detail_col, del_col = st.columns([6, 1])
+        # ── Action buttons ─────────────────────────────────────────────────
+        btn_col1, btn_col2, btn_col3 = st.columns([2, 2, 8])
 
-        with detail_col:
-            with st.expander("View summary"):
-                try:
-                    parsed = json.loads(summary_json)
-                except (json.JSONDecodeError, TypeError):
-                    parsed = {}
+        with btn_col1:
+            if st.button("Open →", key=f"open_{meeting_id}", use_container_width=True, type="primary"):
+                # Load this meeting into session state and navigate to results
+                st.session_state["result"]   = parsed
+                st.session_state["filename"] = filename or "Untitled Meeting"
+                st.session_state["chat_answer"] = None
+                st.session_state.pop("suggested_questions", None)
+                st.session_state.pop("calendar_events", None)
+                st.session_state["page"] = "results"
+                st.rerun()
 
+        with btn_col2:
+            if st.button("Delete", key=f"del_{meeting_id}", use_container_width=True):
+                delete_meeting(meeting_id, uid)
+                st.rerun()
+
+        with btn_col3:
+            # Expand full summary inline
+            with st.expander("View full summary"):
                 ov_text = parsed.get("overview", "")
                 if ov_text:
                     st.markdown(f"""
                     <div class="overview-card" style="margin-bottom:16px;">
                         <div class="ov-label">📄 Overview</div>
                         <p>{ov_text}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    </div>""", unsafe_allow_html=True)
 
                 hc1, hc2, hc3 = st.columns(3)
                 with hc1:
@@ -1508,10 +1644,318 @@ def history_page():
                     key=f"pdf_{meeting_id}",
                 )
 
-        with del_col:
-            st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
-            if st.button("Delete", key=f"del_{meeting_id}", help="Delete this meeting"):
-                delete_meeting(meeting_id, st.session_state.user["id"])
+        st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PAGE 5 — CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
+def calendar_page():
+    nav_bar("calendar")
+
+    st.markdown('<div class="page-title">Calendar</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-subtitle">View upcoming events and add meeting events to Google Calendar.</div>', unsafe_allow_html=True)
+
+    token = st.session_state.get("google_token")
+
+    # ── Upcoming events ───────────────────────────────────────────────────
+    st.markdown('<div class="section-header">Upcoming Events</div>', unsafe_allow_html=True)
+
+    if token:
+        try:
+            service = get_calendar_service(token)
+            now = datetime.utcnow().isoformat() + "Z"
+            result = service.events().list(
+                calendarId="primary", timeMin=now,
+                maxResults=10, singleEvents=True, orderBy="startTime",
+            ).execute()
+            events = result.get("items", [])
+            if events:
+                for ev in events:
+                    title = ev.get("summary", "Untitled")
+                    start = ev.get("start", {})
+                    start_str = start.get("dateTime") or start.get("date") or ""
+                    location = ev.get("location", "")
+                    description = ev.get("description", "")
+                    try:
+                        dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+                        display_time = dt.strftime("%A, %B %d · %I:%M %p")
+                    except Exception:
+                        display_time = start_str
+                    with st.container(border=True):
+                        c1, c2 = st.columns([3, 1])
+                        with c1:
+                            st.markdown(f"**{title}**")
+                            st.caption(display_time)
+                            if location:
+                                st.caption(f"📍 {location}")
+                            if description:
+                                st.caption(description[:120] + ("…" if len(description) > 120 else ""))
+            else:
+                st.info("No upcoming events in your Google Calendar.")
+        except Exception as e:
+            st.error(f"Could not load calendar: {e}")
+    else:
+        st.warning("Sign in with Google to view your calendar.")
+
+    # ── Events from last meeting ──────────────────────────────────────────
+    events = st.session_state.get("calendar_events", [])
+    if events:
+        st.markdown('<div class="section-header">Events Detected in Last Meeting</div>', unsafe_allow_html=True)
+
+        reminder_options = {
+            "No reminder": 0, "5 minutes before": 5, "10 minutes before": 10,
+            "15 minutes before": 15, "30 minutes before": 30, "45 minutes before": 45,
+            "1 hour before": 60, "2 hours before": 120, "1 day before": 1440,
+        }
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ Select All"):
+                for i in range(len(events)):
+                    st.session_state[f"event_enable_{i}"] = True
+                st.rerun()
+        with col2:
+            if st.button("❌ Deselect All"):
+                for i in range(len(events)):
+                    st.session_state[f"event_enable_{i}"] = False
+                st.rerun()
+
+        edited_events = []
+        for i, event in enumerate(events):
+            with st.container(border=True):
+                st.markdown(f"## 📅 {event['title']}")
+                enabled = st.checkbox("Add this event", value=True, key=f"event_enable_{i}")
+                title = st.text_input("Title", value=event["title"], key=f"title_{i}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    date = st.date_input("Date", value=datetime.strptime(event["date"], "%Y-%m-%d").date(), key=f"date_{i}")
+                with col2:
+                    t = st.time_input("Time", value=datetime.strptime(event["time"], "%H:%M").time(), key=f"time_{i}")
+                col3, col4 = st.columns(2)
+                with col3:
+                    duration = st.number_input("Duration (minutes)", min_value=15, max_value=480, value=event.get("duration_minutes", 60), step=15, key=f"duration_{i}")
+                with col4:
+                    reminder_label = st.selectbox(
+                        "Reminder", list(reminder_options.keys()),
+                        index=list(reminder_options.values()).index(event.get("reminder_minutes", 30))
+                        if event.get("reminder_minutes", 30) in reminder_options.values() else 4,
+                        key=f"reminder_{i}",
+                    )
+                    reminder = reminder_options[reminder_label]
+                description = st.text_area("Description", value=event.get("description", ""), key=f"description_{i}")
+                if enabled:
+                    edited_events.append({
+                        "title": title, "date": date.strftime("%Y-%m-%d"),
+                        "time": t.strftime("%H:%M"), "duration_minutes": duration,
+                        "description": description, "reminder_minutes": reminder,
+                    })
+
+        if st.button("📅 Add Selected Events to Google Calendar", type="primary", use_container_width=True):
+            if not edited_events:
+                st.warning("Please select at least one event.")
+            elif not token:
+                st.error("Please sign in with Google.")
+            else:
+                try:
+                    created = create_calendar_events(edited_events, token)
+                    st.success(f"🎉 Added {len(created)} event(s) to your Google Calendar!")
+                    st.balloons()
+                except Exception as e:
+                    st.error(str(e))
+    else:
+        st.markdown('<div class="section-header">Events Detected in Last Meeting</div>', unsafe_allow_html=True)
+        st.info("Process a meeting to detect calendar events automatically.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PAGE 6 — PROFILE
+# ─────────────────────────────────────────────────────────────────────────────
+def profile_page():
+    nav_bar("profile")
+
+    user = st.session_state.get("user", {})
+    picture = user.get("picture", "")
+    name    = user.get("name", "User")
+    email   = user.get("email", "")
+    uid     = user.get("id")
+
+    # Fetch created_at from DB (index 4 after the get_user update)
+    member_since = ""
+    db_user = get_user(email)
+    if db_user and len(db_user) >= 5 and db_user[4]:
+        raw_ts = str(db_user[4])
+        try:
+            dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            member_since = dt.strftime("%B %d, %Y")
+        except Exception:
+            member_since = raw_ts[:10]
+
+    stats = get_dashboard_stats(uid) if uid else {"meeting_count": 0, "hours_processed": 0}
+
+    # ── Hero block ────────────────────────────────────────────────────────
+    if picture:
+        avatar_html = f'<img class="profile-avatar" src="{picture}" />'
+    else:
+        avatar_html = '<div class="profile-avatar-fallback">👤</div>'
+
+    st.markdown(f"""
+    <div class="profile-hero">
+        <div class="profile-avatar-wrap">{avatar_html}</div>
+        <div class="profile-info">
+            <div class="profile-name">{name}</div>
+            <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+                <span class="profile-email-pill">✉ {email}</span>
+                <span class="profile-google-badge">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                    </svg>
+                    Google Account
+                </span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Stat cards ────────────────────────────────────────────────────────
+    st.markdown('<div class="profile-stat-row">', unsafe_allow_html=True)
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.markdown(f"""
+        <div class="profile-stat-card">
+            <div class="profile-stat-num">{stats['meeting_count']}</div>
+            <div class="profile-stat-label">Meetings Processed</div>
+        </div>""", unsafe_allow_html=True)
+    with s2:
+        st.markdown(f"""
+        <div class="profile-stat-card">
+            <div class="profile-stat-num">{stats['hours_processed']}</div>
+            <div class="profile-stat-label">Hours Processed</div>
+        </div>""", unsafe_allow_html=True)
+    with s3:
+        st.markdown(f"""
+        <div class="profile-stat-card">
+            <div class="profile-stat-num">{member_since or "—"}</div>
+            <div class="profile-stat-label">Member Since</div>
+        </div>""", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Account details grid ──────────────────────────────────────────────
+    st.markdown('<div class="section-header">Account Details</div>', unsafe_allow_html=True)
+    st.markdown(f"""
+    <div class="profile-detail-grid">
+        <div class="profile-detail-row">
+            <div class="profile-detail-label">Full Name</div>
+            <div class="profile-detail-value">{name}</div>
+        </div>
+        <div class="profile-detail-row">
+            <div class="profile-detail-label">Email Address</div>
+            <div class="profile-detail-value mono">{email}</div>
+        </div>
+        <div class="profile-detail-row">
+            <div class="profile-detail-label">Connected Account</div>
+            <div class="profile-detail-value">
+                <span class="profile-connected-badge">✓ Google · {email}</span>
+            </div>
+        </div>
+        <div class="profile-detail-row">
+            <div class="profile-detail-label">Google Calendar</div>
+            <div class="profile-detail-value">
+                <span class="profile-connected-badge">✓ Connected</span>
+            </div>
+        </div>
+        <div class="profile-detail-row">
+            <div class="profile-detail-label">Account Created</div>
+            <div class="profile-detail-value">{member_since or "—"}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Sign-out zone ─────────────────────────────────────────────────────
+    st.markdown('<div class="section-header">Session</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="profile-logout-zone">
+        <div>
+            <div class="profile-logout-text">Sign out of MeetGenie</div>
+            <div class="profile-logout-sub">You will need to sign in with Google again to access your meetings.</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="gap-sm"></div>', unsafe_allow_html=True)
+    if st.button("🚪  Sign Out", key="profile_logout", type="primary"):
+        sid = st.query_params.get("sid")
+        if sid:
+            delete_session(sid)
+        clear_session_param()
+        st.session_state.clear()
+        st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PAGE 7 — SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+def settings_page():
+    nav_bar("settings")
+
+    st.markdown('<div class="page-title">Settings</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-subtitle">Configure MeetGenie to fit your workflow.</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-header">AI Model</div>', unsafe_allow_html=True)
+    model = st.selectbox(
+        "Gemini model",
+        ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+        index=0,
+        key="settings_model",
+        help="gemini-2.5-flash gives the best summaries. Switch to a lower model if you hit quota limits.",
+    )
+    if st.button("Save Model Setting", key="save_model"):
+        st.session_state["gemini_model_override"] = model
+        st.success(f"Model set to {model}. Restart the app to apply.")
+
+    st.markdown('<div class="section-header">Transcription</div>', unsafe_allow_html=True)
+    whisper_model = st.selectbox(
+        "Whisper model",
+        ["tiny", "base", "small"],
+        index=0,
+        key="settings_whisper",
+        help="tiny uses least RAM (~150 MB). small gives better accuracy (~460 MB).",
+    )
+    if st.button("Save Whisper Setting", key="save_whisper"):
+        st.session_state["whisper_model_override"] = whisper_model
+        st.success(f"Whisper model set to {whisper_model}. Restart to apply.")
+
+    st.markdown('<div class="section-header">Notifications</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="settings-row">
+        <div>
+            <div class="settings-label">Email reminders</div>
+            <div class="settings-sub">Receive a summary email after each meeting is processed</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+    st.toggle("Enable email reminders", value=False, key="settings_email_reminder", disabled=True)
+    st.caption("Coming soon")
+
+    st.markdown('<div class="section-header">Data</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="settings-row">
+        <div>
+            <div class="settings-label">Meeting database</div>
+            <div class="settings-sub">All meetings are stored locally in meetings.db</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    with st.expander("⚠️  Danger Zone"):
+        st.warning("Deleting all meetings cannot be undone.")
+        if st.button("Delete all my meetings", key="delete_all_meetings"):
+            uid = st.session_state.user.get("id")
+            if uid:
+                all_m = get_all_meetings(uid)
+                for m in all_m:
+                    delete_meeting(m[0], uid)
+                st.success(f"Deleted {len(all_m)} meetings.")
                 st.rerun()
 
 
@@ -1519,18 +1963,17 @@ def history_page():
 #  ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
 pages = {
-    "login": login_page,
-    "upload": upload_page,
-    "results": results_page,
-    "history": history_page,
+    "login":     login_page,
+    "dashboard": dashboard_page,
+    "upload":    upload_page,
+    "results":   results_page,
+    "history":   history_page,
+    "calendar":  calendar_page,
+    "profile":   profile_page,
+    "settings":  settings_page,
 }
 
-# Show sidebar only after the user has signed in
 if st.session_state.get("logged_in", False):
     render_sidebar()
 
-# Render the current page
-pages.get(
-    st.session_state.get("page", "login"),
-    login_page,
-)()
+pages.get(st.session_state.get("page", "login"), login_page)()

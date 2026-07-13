@@ -1,15 +1,9 @@
 from services.calendar_extractor import extract_calendar_events
 
 transcript = """
-Today's meeting discussed the following:
-
-Client Demo on July 15 at 3 PM.
-
-Sprint Planning on Friday at 11 AM.
-
-Final presentation on August 1.
-
-Remember to invite everyone.
+Let's schedule a client demo on July 15 at 3 PM.
+It will last for 90 minutes.
+Please remind everyone 15 minutes before.
 """
 
 events = extract_calendar_events(transcript)
