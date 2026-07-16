@@ -10,26 +10,26 @@ from streamlit_oauth import OAuth2Component
 # -----------------------------
 # Load Google OAuth credentials
 # -----------------------------
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 CLIENT_SECRET_FILE = BASE_DIR / "client_secret_web.json"
 
-with open(CLIENT_SECRET_FILE, "r") as f:
-    creds = json.load(f)["web"]
+# Running on Streamlit Cloud?
+IS_CLOUD = "client_secret_web" in st.secrets
 
-CLIENT_ID = creds["client_id"]
-CLIENT_SECRET = creds["client_secret"]
+if IS_CLOUD:
+    creds = st.secrets["client_secret_web"]
+    CLIENT_ID = creds["client_id"]
+    CLIENT_SECRET = creds["client_secret"]
+    REDIRECT_URI = creds["redirect_uri"]
+else:
+    with open(CLIENT_SECRET_FILE, "r") as f:
+        creds = json.load(f)["web"]
 
-AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+    CLIENT_ID = creds["client_id"]
+    CLIENT_SECRET = creds["client_secret"]
 
-SCOPES = [
-    "openid",
-    "email",
-    "profile",
-    "https://www.googleapis.com/auth/calendar",
-]
-
-REDIRECT_URI = "http://localhost:8501"
+    REDIRECT_URI = "http://localhost:8501"
 
 oauth2 = OAuth2Component(
     CLIENT_ID,
