@@ -14,7 +14,6 @@ from streamlit_oauth import OAuth2Component
 BASE_DIR = Path(__file__).resolve().parent.parent
 CLIENT_SECRET_FILE = BASE_DIR / "client_secret_web.json"
 
-# Running on Streamlit Cloud?
 IS_CLOUD = "client_secret_web" in st.secrets
 
 if IS_CLOUD:
@@ -31,6 +30,16 @@ else:
 
     REDIRECT_URI = "http://localhost:8501"
 
+AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+SCOPES = [
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/calendar",
+]
+
 oauth2 = OAuth2Component(
     CLIENT_ID,
     CLIENT_SECRET,
@@ -38,7 +47,6 @@ oauth2 = OAuth2Component(
     TOKEN_URL,
 )
 
-# Query param key used to carry the session token across refreshes
 SESSION_PARAM = "sid"
 
 
@@ -57,10 +65,6 @@ def _fetch_profile(access_token: str) -> Optional[dict]:
 
 
 def _refresh_access_token(token: dict) -> Optional[dict]:
-    """
-    Use the stored refresh_token to obtain a new access_token from Google.
-    Returns the updated token dict, or None if refresh fails.
-    """
     refresh_token = token.get("refresh_token")
     if not refresh_token:
         return None
@@ -79,9 +83,7 @@ def _refresh_access_token(token: dict) -> Optional[dict]:
         resp.raise_for_status()
         new_data = resp.json()
 
-        # Merge — Google only returns a new access_token, not a new refresh_token
         updated = {**token, **new_data}
-        # Keep the original refresh_token if Google didn't issue a new one
         if "refresh_token" not in new_data:
             updated["refresh_token"] = refresh_token
         return updated
@@ -91,7 +93,6 @@ def _refresh_access_token(token: dict) -> Optional[dict]:
 
 
 def _build_user_dict(token: dict, profile: dict) -> dict:
-    """Build the user dict that app.py stores in session_state."""
     token["client_id"] = CLIENT_ID
     token["client_secret"] = CLIENT_SECRET
     return {
@@ -104,10 +105,6 @@ def _build_user_dict(token: dict, profile: dict) -> dict:
 
 
 def google_login() -> Optional[dict]:
-    """
-    Render the Google OAuth button and return a user dict on success,
-    or None if the user has not yet authenticated.
-    """
     result = oauth2.authorize_button(
         name="Sign-in with Google",
         redirect_uri=REDIRECT_URI,
@@ -132,20 +129,7 @@ def google_login() -> Optional[dict]:
 
 
 def restore_session() -> Optional[dict]:
-    """
-    Attempt to restore a logged-in session after a browser refresh.
 
-    Flow:
-    1. Check for ?sid=<token> in the URL query params.
-    2. Look up the token in the sessions DB table → get the user's email.
-    3. Load the user's stored credentials from the users table.
-    4. Try to refresh the access token (it may have expired).
-    5. Return the user dict if everything succeeds, else None.
-
-    Returns None if the session cannot be restored (invalid token,
-    no stored credentials, refresh failed). The caller should then
-    show the login page.
-    """
     from services.database import get_session, get_user, update_user_credentials
 
     sid = st.query_params.get(SESSION_PARAM)
@@ -154,7 +138,6 @@ def restore_session() -> Optional[dict]:
 
     email = get_session(sid)
     if not email:
-        # Token is invalid or was deleted (sign-out on another tab)
         return None
 
     db_user = get_user(email)
@@ -168,20 +151,16 @@ def restore_session() -> Optional[dict]:
     except (json.JSONDecodeError, TypeError):
         return None
 
-    # Try to use the current access token first
     profile = _fetch_profile(token.get("access_token", ""))
 
     if not profile:
-        # Access token expired — try to refresh
         refreshed = _refresh_access_token(token)
         if not refreshed:
-            # Refresh token also invalid — user must log in again
             return None
         token = refreshed
         profile = _fetch_profile(token["access_token"])
         if not profile:
             return None
-        # Persist the refreshed token
         update_user_credentials(email, json.dumps(token))
 
     user = _build_user_dict(token, profile)
