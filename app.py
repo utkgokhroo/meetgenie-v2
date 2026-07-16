@@ -4,6 +4,8 @@ import os
 import tempfile
 import time
 from datetime import datetime, timedelta
+
+IS_CLOUD = os.getenv("STREAMLIT_RUNTIME") is not None
 from services.google_auth import (
     google_login,
     restore_session,
@@ -1568,75 +1570,100 @@ def upload_page():
             st.session_state.error = None
 
         # ── Recording section ──────────────────────────────────────────────
-        currently_recording = is_recording()
 
-        st.markdown('<div class="rec-container">', unsafe_allow_html=True)
-        st.markdown('<div class="rec-label">🎙 Live Recording</div>', unsafe_allow_html=True)
+        # ── Recording section ──────────────────────────────────────────────
 
-        if st.session_state.recording_error:
-            st.error(f"Recording failed: {st.session_state.recording_error}")
-            st.session_state.recording_error = None
+        if IS_CLOUD:
+            st.markdown('<div class="rec-container">', unsafe_allow_html=True)
 
-        recording_future = st.session_state.recording_future
-        if recording_future is not None:
-            if recording_future.done():
-                try:
-                    st.session_state.result = recording_future.result()
-                    st.session_state.filename = st.session_state.recording_processing_name or meeting_name.strip()
-                    st.session_state.chat_answer = None
-                    st.session_state.pop("calendar_events", None)
-                    st.session_state.pop("suggested_questions", None)
-                    st.session_state.page = "results"
-                except Exception as exc:
-                    st.session_state.recording_error = str(exc)
-                finally:
-                    st.session_state.recording_future = None
-                    st.session_state.recording_processing_name = None
-                    st.session_state.recording = False
-                st.rerun()
+            st.markdown(
+                '<div class="rec-label">🎙 Live Recording</div>',
+                unsafe_allow_html=True,
+            )
+
+            st.info(
+                "Recording is available only in the desktop/local version of MeetGenie.\n\n"
+                "On the cloud version, upload MP3, WAV, MP4 or TXT files instead."
+            )
+
+            st.button(
+                "▶ Start Recording",
+                disabled=True,
+                use_container_width=True,
+            )
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        else:
+            currently_recording = is_recording()
+
+            st.markdown('<div class="rec-container">', unsafe_allow_html=True)
+            st.markdown('<div class="rec-label">🎙 Live Recording</div>', unsafe_allow_html=True)
+
+            if st.session_state.recording_error:
+                st.error(f"Recording failed: {st.session_state.recording_error}")
+                st.session_state.recording_error = None
+
+            recording_future = st.session_state.recording_future
+            if recording_future is not None:
+                if recording_future.done():
+                    try:
+                        st.session_state.result = recording_future.result()
+                        st.session_state.filename = st.session_state.recording_processing_name or meeting_name.strip()
+                        st.session_state.chat_answer = None
+                        st.session_state.pop("calendar_events", None)
+                        st.session_state.pop("suggested_questions", None)
+                        st.session_state.page = "results"
+                    except Exception as exc:
+                        st.session_state.recording_error = str(exc)
+                    finally:
+                        st.session_state.recording_future = None
+                        st.session_state.recording_processing_name = None
+                        st.session_state.recording = False
+                    st.rerun()
+                else:
+                    st.info("Transcribing and summarising the recording...")
+                    time.sleep(1)
+                    st.rerun()
+
+            if not currently_recording:
+                if st.button("▶  Start Recording", width="stretch"):
+                    if not meeting_name.strip():
+                        st.warning("Enter a meeting name before recording.")
+                    else:
+                        try:
+                            start_recording()
+                            st.session_state.recording = True
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not start recording: {exc}")
             else:
-                st.info("Transcribing and summarising the recording...")
+                if st.button("⏹  Stop & Summarise", type="primary", width="stretch"):
+                    try:
+                        with st.spinner("Saving audio…"):
+                            meeting_file = stop_recording()
+                        st.session_state.recording = False
+                        st.session_state.recording_processing_name = meeting_name.strip()
+                        st.session_state.recording_future = (
+                            st.session_state.recording_executor.submit(_process_recorded_audio, meeting_file)
+                        )
+                    except Exception as exc:
+                        st.session_state.recording = False
+                        st.session_state.recording_error = str(exc)
+                    st.rerun()
+
+                elapsed = get_recording_duration()
+                mins, secs = divmod(int(elapsed), 60)
+                st.markdown(f"""
+                <div class="rec-status">
+                    <div class="rec-dot"></div>
+                    <span class="rec-status-text">Recording in progress</span>
+                    <span class="rec-timer">{mins:02d}:{secs:02d}</span>
+                </div>""", unsafe_allow_html=True)
                 time.sleep(1)
                 st.rerun()
 
-        if not currently_recording:
-            if st.button("▶  Start Recording", width="stretch"):
-                if not meeting_name.strip():
-                    st.warning("Enter a meeting name before recording.")
-                else:
-                    try:
-                        start_recording()
-                        st.session_state.recording = True
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not start recording: {exc}")
-        else:
-            if st.button("⏹  Stop & Summarise", type="primary", width="stretch"):
-                try:
-                    with st.spinner("Saving audio…"):
-                        meeting_file = stop_recording()
-                    st.session_state.recording = False
-                    st.session_state.recording_processing_name = meeting_name.strip()
-                    st.session_state.recording_future = (
-                        st.session_state.recording_executor.submit(_process_recorded_audio, meeting_file)
-                    )
-                except Exception as exc:
-                    st.session_state.recording = False
-                    st.session_state.recording_error = str(exc)
-                st.rerun()
-
-            elapsed = get_recording_duration()
-            mins, secs = divmod(int(elapsed), 60)
-            st.markdown(f"""
-            <div class="rec-status">
-                <div class="rec-dot"></div>
-                <span class="rec-status-text">Recording in progress</span>
-                <span class="rec-timer">{mins:02d}:{secs:02d}</span>
-            </div>""", unsafe_allow_html=True)
-            time.sleep(1)
-            st.rerun()
-
-        st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
     with col_side:
         st.markdown('<div class="gap-lg"></div>', unsafe_allow_html=True)
